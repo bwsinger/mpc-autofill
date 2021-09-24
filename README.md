@@ -44,3 +44,24 @@ The below guide describes the procedure for setting up the web component. If you
 0 0 * * SUN bash /root/mpc-autofill/sync_dfcs
 ```
 16. **[PROD]** Deploy two Google Script according to the code specified in `autofill.py` and adjust the URLs in that script to point to your GS endpoints
+
+# Running in Docker
+Some of the steps above are still required to run in docker.
+
+## Pre-reqs
+You must have the Docker Desktop client installed on your machine. [Docker Desktop](https://docs.docker.com/desktop/)
+
+## Steps
+1. Go to the `$working_directory/.run` directory and for each XML file delete the option `SDK_HOME` (TODO - Make a docker ./run dir)
+2. Set up your Google Drive credentials using a Google Drive service account. For each step, only follow the instructions for the given section, then return and complete the next step. The linked tutorial is slightly out of date, but it is the most complete tutorial around.
+   1. [Step 1](https://help.talend.com/r/E3i03eb7IpvsigwC58fxQg/uEUUsDd_MSx64yoJgSa1xg) - NOTE: The project name, product name, and Application type don't matter for just running the tool locally.
+   2.  Rename and move to `$working_directory/MPCAutofill/credentials.json`
+   3. [Step 2](https://help.talend.com/r/E3i03eb7IpvsigwC58fxQg/ol2OwTHmFbDiMjQl3ES5QA) - NOTE: The JSON file you download at the end of this step is named something slightly different from what the application expects. Make sure to rename it.
+   4. Rename and move to `$working_directory/MPCAutofill/client_secrets.json`
+3. Update the `$working_directory/MPCAutofill/drives.csv` 
+4. In the `$working_directory` run: `docker-compose build`
+5. In the `$working_directory` run: `docker-compose up`
+6. In the `$working_drectory` run: `docker-compose run web python manage.py migrate`
+7. In the `$working_drectory` run: `docker-compose run web python manage.py update_dfcs`
+8. In the `$working_drectory` run: `docker-compose run web python manage.py import_sources`
+9. In the `$working_drectory` run: `docker-compose run web python manage.py update_database` 
