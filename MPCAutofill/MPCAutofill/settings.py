@@ -28,7 +28,7 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="-")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env("DJANGO_DEBUG", default=False)
 
-ALLOWED_HOSTS = env("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ALLOWED_HOSTS = env("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "0.0.0.0"])
 
 # Google Analytics GTAG
 GTAG = env("GTAG", default="")
