@@ -34,6 +34,7 @@ from src.constants import (
     States,
     TargetSites,
 )
+from src.cli_ui import get_debug_panel_lines, print_action_required, print_info, print_phase, print_state
 from src.exc import InvalidStateException
 from src.formatting import bold
 from src.logging import logger
@@ -63,11 +64,13 @@ class AutofillDriver:
     # internal properties (init=False)
     state: str = attr.ib(init=False, default=States.initialising)
     action: Optional[str] = attr.ib(init=False, default=None)
-    manager: enlighten.Manager = attr.ib(init=False, default=attr.Factory(enlighten.get_manager))
-    status_bar: enlighten.StatusBar = attr.ib(init=False, default=False)
+    manager: enlighten.Manager = attr.ib(
+        init=False, default=attr.Factory(lambda: enlighten.get_manager(set_scroll=False))
+    )
     order_progress_bar: enlighten.Counter = attr.ib(init=False, default=None)
     download_bar: enlighten.Counter = attr.ib(init=False, default=None)
     upload_bar: enlighten.Counter = attr.ib(init=False, default=None)
+    show_progress_bars: bool = attr.ib(init=False, default=False)
 
     # region initialisation
 
@@ -97,23 +100,47 @@ class AutofillDriver:
         self.driver = driver
 
     def initialise_bars(self) -> None:
-        # set the total for upload/download bars to 0 here, then change the total according to each order
-        # as they're processed
-        status_format = "State: {state}, Action: {action}"
-        self.status_bar = self.manager.status_bar(
-            status_format=status_format, state=bold(self.state), action=bold("N/A"), position=1, autorefresh=True
-        )
+        # Set the total for upload/download bars to 0 here, then change the total according
+        # to each order as they're processed.
         self.order_progress_bar = self.manager.counter(
-            total=0, desc="Projects Auto-Filled", position=2, autorefresh=True
+            total=0, desc="Projects Auto-Filled", position=1, autorefresh=True
         )
-        self.download_bar = self.manager.counter(total=0, desc="Images Downloaded   ", position=3, autorefresh=True)
-        self.upload_bar = self.manager.counter(total=0, desc="Images Uploaded     ", position=4, autorefresh=True)
-        self.status_bar.refresh()
+        self.download_bar = self.manager.counter(total=0, desc="Images Downloaded   ", position=2, autorefresh=True)
+        self.upload_bar = self.manager.counter(total=0, desc="Images Uploaded     ", position=3, autorefresh=True)
         self.order_progress_bar.refresh()
         self.download_bar.refresh()
         self.upload_bar.refresh()
 
+    def get_progress_bars(self) -> list[enlighten.Counter]:
+        bars: list[enlighten.Counter] = []
+        if self.order_progress_bar is not None:
+            bars.append(self.order_progress_bar)
+        if self.download_bar is not None:
+            bars.append(self.download_bar)
+        if self.upload_bar is not None:
+            bars.append(self.upload_bar)
+        return bars
+
+    def pause_progress_display(self) -> None:
+        for bar in self.get_progress_bars():
+            bar.clear()
+            bar.enabled = False
+
+    def resume_progress_display(self) -> None:
+        for bar in self.get_progress_bars():
+            bar.enabled = True
+            bar.refresh()
+
+    def teardown_progress_display(self) -> None:
+        for bar in self.get_progress_bars():
+            bar.clear()
+            bar.close()
+
     def configure_bars_for_order(self, order: CardOrder) -> None:
+        if not self.show_progress_bars:
+            return
+        assert self.upload_bar is not None
+        assert self.download_bar is not None
         num_images = len(order.fronts.cards_by_id) + len(order.backs.cards_by_id)
         self.set_state(state=States.initialising, action=None)
         self.upload_bar.total = num_images
@@ -123,15 +150,24 @@ class AutofillDriver:
         self.upload_bar.refresh()
         self.download_bar.refresh()
 
+    def emit_step(self, message: str) -> None:
+        step_line = f"[STEP] {message}"
+        if self.show_progress_bars and self.get_progress_bars():
+            self.manager.write(step_line)
+        else:
+            print_info(message)
+
     def initialise_order(self, order: CardOrder) -> None:
-        logger.info(f"Auto-filling {bold(order.name or 'Unnamed Project')}")
-        logger.info("  " + order.get_overview())
+        self.emit_step(f"Starting project: {bold(order.name or 'Unnamed Project')}")
+        logger.debug("Project overview: " + order.get_overview())
         self.driver.get(f"{self.target_site.value.starting_url}")
         self.set_state(States.defining_order)
 
     def __attrs_post_init__(self) -> None:
-        self.initialise_bars()
+        self.show_progress_bars = self.target_site != TargetSites.DriveThruCards
         self.initialise_driver()
+        if self.show_progress_bars:
+            self.initialise_bars()
         self.set_state(States.initialised)
 
     @staticmethod
@@ -222,10 +258,18 @@ class AutofillDriver:
         )
 
     def set_state(self, state: str, action: Optional[str] = None) -> None:
+        previous_state = self.state
+        previous_action = self.action
         self.state = state
         self.action = action
-        self.status_bar.update(state=bold(self.state), action=bold(self.action or "N/A"))
-        self.status_bar.refresh()
+        if previous_state != state or previous_action != action:
+            state_line = f"[STATE] {self.state}" if self.action is None else f"[STATE] {self.state} - {self.action}"
+            if self.show_progress_bars and self.get_progress_bars():
+                self.manager.write(state_line)
+                for debug_line in get_debug_panel_lines():
+                    self.manager.write(debug_line)
+            else:
+                print_state(state=self.state, action=self.action)
 
     def assert_state(self, expected_state: States) -> None:
         if self.state != expected_state:
@@ -1171,6 +1215,7 @@ class AutofillDriver:
     def upload_and_insert_images(
         self, order: CardOrder, images: CardImageCollection, auto_save_threshold: Optional[int]
     ) -> None:
+        assert self.upload_bar is not None
         image_count = len(images.cards_by_id)
         logger.debug(f"Inserting {image_count} images into face {images.face}...")
         for i in range(image_count):
@@ -1203,17 +1248,19 @@ class AutofillDriver:
         action = self.action
         self.driver.get(f"{self.target_site.value.login_url}")
         self.set_state(States.defining_order, "Awaiting user sign-in")
-        logger.info(
-            textwrap.dedent(
-                f"""
-                The specified inputs require you to sign into your {bold(self.target_site.name)} account.
-                The tool will automatically resume once you've signed in.
-                """
-            )
+        self.pause_progress_display()
+        print_phase(title="Waiting on You", step=3, total_steps=4, current_step="Sign In", replace_screen=True)
+        print_action_required(
+            f"""
+            Sign in to your {bold(self.target_site.name)} account in the browser window.
+            The tool will automatically resume once sign-in is complete.
+            """
         )
         while not self.is_user_authenticated():
             time.sleep(1)
-        logger.info("Successfully signed in!")
+        self.emit_step("Sign-in detected. Resuming automation.")
+        print_phase(title="Running", step=2, total_steps=4, current_step="Resuming Automation", replace_screen=True)
+        self.resume_progress_display()
         self.set_state(States.defining_order, action)
         self.driver.get(f"{self.target_site.value.starting_url}")
         logger.debug("Finished authenticating the user with the targeted site!")
@@ -1246,7 +1293,7 @@ class AutofillDriver:
         )
         bracket = bracket_options[0]
         logger.debug(f"The smallest bracket for {quantity} cards is {bracket}.")
-        logger.info(f"This project fits into the bracket of up to {bold(bracket)} cards.")
+        logger.debug(f"This project fits into the bracket of up to {bold(bracket)} cards.")
         qty_dropdown.select_by_value(str(bracket))
         logger.debug("Finished configuring the order's bracket!")
 
@@ -1527,7 +1574,7 @@ class AutofillDriver:
 
             self.initialise_order(order=order)
             if fulfilment_method == OrderFulfilmentMethod.new_project:
-                logger.info("Configuring a new project.")
+                self.emit_step("Creating a new project.")
                 self.define_project(order=order)
                 self.page_to_fronts(order=order)
             else:
@@ -1538,15 +1585,11 @@ class AutofillDriver:
             self.insert_backs(order=order, auto_save_threshold=auto_save_threshold)
             self.page_to_review()
         log_hours_minutes_seconds_elapsed(t)
-        logger.info(
-            textwrap.dedent(
-                f"""
-                Please review your project and ensure everything has been uploaded correctly before finalising with
-                {self.target_site.name}. If any images failed to download, links to download them will have been printed
-                above. If you need to make any changes to your order, you can do so by adding it to your Saved Projects
-                and editing in your normal browser.
-                """
-            )
+        print_action_required(
+            f"""
+            Please review your project before finalising with {self.target_site.name}.
+            If anything is incorrect, save and edit the project in your browser.
+            """
         )
 
     def execute_orders(
@@ -1555,37 +1598,49 @@ class AutofillDriver:
         auto_save_threshold: Optional[int],
         post_processing_config: Optional[ImagePostProcessingConfig],
     ) -> None:
-        logger.info(f"{bold(len(orders))} project/s are scheduled to be auto-filled. They are:")
+        self.emit_step(f"{len(orders)} project(s) queued for auto-fill.")
         for i, order in enumerate(orders, start=1):
-            logger.info(f"{i}. {bold(order.name or 'Unnamed Project')}")
-            logger.info("  " + order.get_overview())
+            logger.debug(f"{i}. {bold(order.name or 'Unnamed Project')}")
+            logger.debug("  " + order.get_overview())
 
-        self.order_progress_bar.total = len(orders)
-        self.order_progress_bar.refresh()
-        for i, order in enumerate(orders, start=1):
-            logger.info(f"Auto-filling project {bold(i)} of {bold(len(orders))}.")
-
-            fulfilment_method: OrderFulfilmentMethod = inquirer.select(
-                message="How would you like to upload this order?",
-                choices=[
-                    OrderFulfilmentMethod.new_project,
-                    OrderFulfilmentMethod.append_to_project,
-                    OrderFulfilmentMethod.continue_project,
-                ],
-                default=OrderFulfilmentMethod.new_project,
-            ).execute()
-
-            self.execute_order(
-                order=order,
-                fulfilment_method=fulfilment_method,
-                auto_save_threshold=auto_save_threshold,
-                post_processing_config=post_processing_config,
-            )
-            self.order_progress_bar.update()
+        if self.show_progress_bars:
+            assert self.order_progress_bar is not None
+            self.order_progress_bar.total = len(orders)
             self.order_progress_bar.refresh()
-            if i < len(orders):
-                if auto_save_threshold is not None:
-                    logger.info("Please add this project to your cart before continuing.")
-                input(f"Press {bold('Enter')} to continue with auto-filling the next project.\n")
+        try:
+            for i, order in enumerate(orders, start=1):
+                self.emit_step(f"Project {i}/{len(orders)}")
+
+                self.pause_progress_display()
+                fulfilment_method: OrderFulfilmentMethod = inquirer.select(
+                    message="How would you like to upload this order?",
+                    choices=[
+                        OrderFulfilmentMethod.new_project,
+                        OrderFulfilmentMethod.append_to_project,
+                        OrderFulfilmentMethod.continue_project,
+                    ],
+                    default=OrderFulfilmentMethod.new_project,
+                ).execute()
+                self.resume_progress_display()
+
+                self.execute_order(
+                    order=order,
+                    fulfilment_method=fulfilment_method,
+                    auto_save_threshold=auto_save_threshold,
+                    post_processing_config=post_processing_config,
+                )
+                if self.show_progress_bars:
+                    assert self.order_progress_bar is not None
+                    self.order_progress_bar.update()
+                    self.order_progress_bar.refresh()
+                if i < len(orders):
+                    if auto_save_threshold is not None:
+                        print_action_required("Please add this project to your cart before continuing.")
+                    self.pause_progress_display()
+                    input(f"Press {bold('Enter')} to continue with auto-filling the next project.\n")
+                    self.resume_progress_display()
+        finally:
+            if self.show_progress_bars:
+                self.teardown_progress_display()
 
     # endregion

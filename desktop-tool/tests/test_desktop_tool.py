@@ -17,6 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 import src
+import src.cli_ui as cli_ui
 import src.constants as constants
 import src.webdrivers as webdrivers
 from src.constants import OrderFulfilmentMethod, SourceType
@@ -440,8 +441,35 @@ def test_cli_help_documents_new_flags_and_stealth_guidance() -> None:
     assert "--browser-profile-path" in result.output
     assert "--browser-profile-name" in result.output
     assert "--dtc-custom-stealth" in result.output
+    assert "--ui-preview" in result.output
+    assert "--ui-dry-run" in result.output
     assert "last resort" in result.output
     assert "detailed Selenium step-by-step logs" in result.output
+
+
+def test_ui_preview_renders_mockup_blocks_and_exits() -> None:
+    result = CliRunner().invoke(
+        autofill_cli.main,
+        ["--ui-preview", "--site", "MakePlayingCards"],
+    )
+    assert result.exit_code == 0
+    assert "Phase: Setup (1/4)" in result.output
+    assert "Phase: Running (2/4)" in result.output
+    assert "[PROGRESS]" in result.output
+    assert "Preview complete. No browser automation was run." in result.output
+
+
+def test_ui_preview_debug_panel_keeps_last_15_lines() -> None:
+    result = CliRunner().invoke(
+        autofill_cli.main,
+        ["--ui-preview", "--site", "MakePlayingCards", "--log-level", "DEBUG"],
+    )
+    assert result.exit_code == 0
+    assert "[DEBUG] (last 15 events)" in result.output
+    assert "sample debug event 3" in result.output
+    assert "sample debug event 17" in result.output
+    assert "sample debug event 1\n" not in result.output
+    assert "sample debug event 2\n" not in result.output
 
 
 def test_should_run_interactive_onboarding_only_when_no_args_and_tty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -517,6 +545,26 @@ def test_cli_site_choices_list_drivethrucards_last() -> None:
     assert result.exit_code == 0
     site_line = next(line for line in result.output.splitlines() if line.strip().startswith("--site ["))
     assert site_line.endswith("DriveThruCards]")
+
+
+def test_cli_ui_debug_panel_keeps_last_15_events() -> None:
+    cli_ui.set_debug_mode(True)
+    for i in range(20):
+        cli_ui.add_debug_event(f"event-{i}")
+    lines = cli_ui.get_debug_panel_lines()
+    assert lines[0] == "[DEBUG] (last 15 events)"
+    assert len(lines) == 16
+    assert lines[1] == "event-5"
+    assert lines[-1] == "event-19"
+    cli_ui.set_debug_mode(False)
+
+
+def test_cli_ui_debug_panel_clears_when_disabled() -> None:
+    cli_ui.set_debug_mode(True)
+    cli_ui.add_debug_event("event-a")
+    assert len(cli_ui.get_debug_panel_lines()) > 0
+    cli_ui.set_debug_mode(False)
+    assert cli_ui.get_debug_panel_lines() == []
 
 
 def test_download_images_for_orders_downloads_fronts_and_backs() -> None:

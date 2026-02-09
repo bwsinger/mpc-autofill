@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from glob import glob
@@ -34,7 +35,9 @@ import enlighten
 from InquirerPy import inquirer
 from wakepy import keepawake
 
+from src.cli_ui import add_debug_event, print_action_required, print_info
 from src.constants import THREADS, Browsers, ImageResizeMethods, TargetSites
+from src.cli_ui import print_phase, render_debug_panel, set_debug_mode
 from src.driver import AutofillDriver
 from src.exc import ValidationException
 from src.formatting import bold
@@ -52,6 +55,130 @@ DEFAULT_BROWSER = Browsers.chrome.name
 DEFAULT_SITE = TargetSites.MakePlayingCards.name
 DEFAULT_AUTO_SAVE = True
 DEFAULT_IMAGE_POST_PROCESSING = True
+
+
+def _render_progress_line(label: str, current: int, total: int, width: int = 48) -> str:
+    if total <= 0:
+        ratio = 0.0
+    else:
+        ratio = min(max(current / total, 0.0), 1.0)
+    filled = int(round(width * ratio))
+    bar = "█" * filled + "." * (width - filled)
+    return f"{label:<20} [{bar}] {current}/{total}"
+
+
+def render_ui_preview(site: str, log_level: str) -> None:
+    debug_enabled = log_level.upper() == logging.getLevelName(logging.DEBUG)
+    set_debug_mode(debug_enabled)
+    if debug_enabled:
+        for i in range(1, 18):
+            add_debug_event(f"12:4{i % 10}:00 sample debug event {i}")
+
+    if site == TargetSites.DriveThruCards.name:
+        question_lines = [
+            f"? [1/2] Which web browser should the tool run on? (default: {DEFAULT_BROWSER}, press Enter if unsure) chrome",
+            f"? [2/2] Which site should the tool auto-fill your project into? (default: {DEFAULT_SITE}) {site}",
+        ]
+    else:
+        question_lines = [
+            f"? [1/4] Which web browser should the tool run on? (default: {DEFAULT_BROWSER}, press Enter if unsure) chrome",
+            f"? [2/4] Which site should the tool auto-fill your project into? (default: {DEFAULT_SITE}) {site}",
+            "? [3/4] Automatically save this project to your account while the tool is running? (default: Yes) Yes",
+            "? [4/4] Should the tool post-process your images to reduce upload times? (default: Yes) No",
+        ]
+
+    for index, question_line in enumerate(question_lines, start=1):
+        print_phase(title="Setup", step=1, total_steps=4, current_step=f"Question {index}/{len(question_lines)}", replace_screen=True)
+        click.echo(question_line)
+
+    print_phase(title="Running", step=2, total_steps=4, current_step="Uploading Images", replace_screen=True)
+    print_info("MPC Autofill desktop tool has successfully initialised!")
+    print_info(f"Target site: {site}")
+    click.echo("")
+    click.echo("[PROGRESS]")
+    click.echo(_render_progress_line("Images Downloaded", 612, 612))
+    click.echo(_render_progress_line("Images Uploaded", 319, 612))
+    click.echo(_render_progress_line("Projects Auto-Filled", 0, 3))
+    click.echo("")
+    click.echo("[STATE] Defining Order - Uploading fronts")
+    render_debug_panel()
+    click.echo("")
+    print_phase(title="Waiting on You", step=3, total_steps=4, current_step="Sign In", replace_screen=True)
+    click.echo("[ACTION REQUIRED] Sign in to your account in the browser.")
+    click.echo("[ACTION REQUIRED] The tool will automatically resume once sign-in is complete.")
+    render_debug_panel()
+    click.echo("")
+    print_phase(title="Done", step=4, total_steps=4, current_step="Summary", replace_screen=True)
+    print_info("Preview complete. No browser automation was run.")
+
+
+def run_ui_dry_run(
+    site: str,
+    browser: str,
+    allowsleep: bool,
+    image_post_processing: bool,
+) -> None:
+    print_phase(title="Running", step=2, total_steps=4, current_step="Initializing", replace_screen=True)
+    print_info("MPC Autofill desktop tool has successfully initialised.")
+    if not allowsleep:
+        print_info("System sleep prevention is enabled for this run.")
+    if image_post_processing:
+        print_info("Image post-processing is enabled for this run.")
+    print_info("Parsing XML file test_order...")
+    print_info("Web server started on http://localhost:63179/")
+    print_info(f"Successfully initialised {browser} driver targeting {site}.")
+
+    manager = enlighten.get_manager(set_scroll=False)
+    order_progress_bar = manager.counter(total=1, desc="Projects Auto-Filled", autorefresh=True)
+    download_bar = manager.counter(total=10, desc="Images Downloaded   ", autorefresh=True)
+    upload_bar = manager.counter(total=10, desc="Images Uploaded     ", autorefresh=True)
+    order_progress_bar.refresh()
+    download_bar.refresh()
+    upload_bar.refresh()
+
+    for i in range(10):
+        download_bar.update()
+        if i < 7:
+            upload_bar.update()
+        time.sleep(0.03)
+
+    for bar in [order_progress_bar, download_bar, upload_bar]:
+        bar.clear()
+        bar.enabled = False
+
+    fulfilment_method = inquirer.select(
+        message="How would you like to upload this order?",
+        choices=["Create a new project", "Append to an existing project", "Continue an existing project"],
+        default="Create a new project",
+    ).execute()
+
+    for bar in [order_progress_bar, download_bar, upload_bar]:
+        bar.enabled = True
+        bar.refresh()
+
+    manager.write(f"[STEP] Selected fulfilment method: {fulfilment_method}")
+    manager.write("[STEP] Creating a new project.")
+    manager.write("[STATE] Defining Order - Uploading fronts")
+
+    for i in range(3):
+        upload_bar.update()
+        time.sleep(0.03)
+    order_progress_bar.update()
+    order_progress_bar.refresh()
+    upload_bar.refresh()
+
+    for bar in [order_progress_bar, download_bar, upload_bar]:
+        bar.clear()
+        bar.close()
+
+    print_phase(title="Done", step=4, total_steps=4, current_step="Summary", replace_screen=True)
+    print_action_required(
+        f"""
+        Please review your project before finalising with {site}.
+        If anything is incorrect, save and edit the project in your browser.
+        """
+    )
+    print_info("UI dry-run complete. No browser automation was run.")
 
 
 def get_default_dtc_icc_profile() -> Optional[str]:
@@ -227,7 +354,7 @@ def download_images_for_orders(
         len(order.fronts.cards_by_id) + len(order.backs.cards_by_id)
         for order in orders
     )
-    manager = enlighten.get_manager()
+    manager = enlighten.get_manager(set_scroll=False)
     download_bar = manager.counter(total=total_images, desc="Images Downloaded", position=1, autorefresh=True)
     with ThreadPoolExecutor(max_workers=THREADS) as pool:
         for order in orders:
@@ -253,31 +380,47 @@ def should_run_interactive_onboarding() -> bool:
     return len(sys.argv) == 1 and sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def should_run_interactive_onboarding_for_dry_run() -> bool:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    # For ui-dry-run, only auto-prompt when onboarding flags were not explicitly provided.
+    onboarding_flags = {
+        "-b",
+        "--browser",
+        "--site",
+        "--auto-save",
+        "--no-auto-save",
+        "--image-post-processing",
+        "--no-image-post-processing",
+    }
+    return not any(flag in sys.argv for flag in onboarding_flags)
+
+
 def run_interactive_onboarding() -> tuple[str, str, bool, bool]:
+    print_phase(title="Setup", step=1, total_steps=4, current_step="Question 1/4", replace_screen=True)
     browser = inquirer.rawlist(
         message=(
-            "Which web browser should the tool run on?\n"
-            f"Default: {DEFAULT_BROWSER}. If you're not sure, press Enter."
+            f"[1/4] Which web browser should the tool run on? "
+            f"(default: {DEFAULT_BROWSER}, press Enter if unsure)"
         ),
         choices=[{"name": browser_name, "value": browser_name} for browser_name in get_browser_picker_choices()],
         default=DEFAULT_BROWSER,
     ).execute()
 
+    print_phase(title="Setup", step=1, total_steps=4, current_step="Question 2/4", replace_screen=True)
     site = inquirer.rawlist(
-        message=(
-            "Which site should the tool auto-fill your project into?\n"
-            f"Default: {DEFAULT_SITE}. If you're not sure, press Enter."
-        ),
+        message=f"[2/4] Which site should the tool auto-fill your project into? (default: {DEFAULT_SITE})",
         choices=[{"name": site_name, "value": site_name} for site_name in get_site_picker_choices()],
         default=DEFAULT_SITE,
     ).execute()
 
     auto_save = DEFAULT_AUTO_SAVE
     if site != TargetSites.DriveThruCards.name:
+        print_phase(title="Setup", step=1, total_steps=4, current_step="Question 3/4", replace_screen=True)
         auto_save = inquirer.rawlist(
             message=(
-                "Automatically save this project to your account while the tool is running?\n"
-                f"Default: {'Yes' if DEFAULT_AUTO_SAVE else 'No'}. If you're not sure, press Enter."
+                "[3/4] Automatically save this project to your account while the tool is running? "
+                f"(default: {'Yes' if DEFAULT_AUTO_SAVE else 'No'})"
             ),
             choices=[
                 {"name": "Yes", "value": True},
@@ -288,11 +431,11 @@ def run_interactive_onboarding() -> tuple[str, str, bool, bool]:
 
     image_post_processing = DEFAULT_IMAGE_POST_PROCESSING
     if site != TargetSites.DriveThruCards.name:
+        print_phase(title="Setup", step=1, total_steps=4, current_step="Question 4/4", replace_screen=True)
         image_post_processing = inquirer.rawlist(
             message=(
-                "Should the tool post-process your images to reduce upload times? "
-                "By default, images will be downscaled to 800 DPI.\n"
-                f"Default: {'Yes' if DEFAULT_IMAGE_POST_PROCESSING else 'No'}. If you're not sure, press Enter."
+                "[4/4] Should the tool post-process your images to reduce upload times? "
+                f"(default: {'Yes' if DEFAULT_IMAGE_POST_PROCESSING else 'No'})"
             ),
             choices=[
                 {"name": "Yes", "value": True},
@@ -448,6 +591,18 @@ def run_interactive_onboarding() -> tuple[str, str, bool, bool]:
     help="If True, debug logs about the tool's actions will be logged to autofill_log.txt in the tool's directory.",
     is_flag=True,
 )
+@click.option(
+    "--ui-preview",
+    default=False,
+    is_flag=True,
+    help="Render a deterministic CLI UI preview and exit (no browser/XML processing).",
+)
+@click.option(
+    "--ui-dry-run",
+    default=False,
+    is_flag=True,
+    help="Run interactive prompt/progress UI simulation and exit (no Selenium/network calls).",
+)
 # @click.option(  # TODO: finish implementing jpeg conversion
 #     "--convert-to-jpeg",
 #     default=True,
@@ -476,10 +631,16 @@ def main(
     combine_orders: bool,
     log_level: str,
     write_debug_logs: bool,
+    ui_preview: bool,
+    ui_dry_run: bool,
     # convert_to_jpeg: bool,
 ) -> None:
-    if should_run_interactive_onboarding():
+    if should_run_interactive_onboarding() or (ui_dry_run and should_run_interactive_onboarding_for_dry_run()):
         browser, site, auto_save, image_post_processing = run_interactive_onboarding()
+
+    if ui_preview:
+        render_ui_preview(site=site, log_level=log_level)
+        return
 
     working_directory: str = DEFAULT_WORKING_DIRECTORY
     if directory:
@@ -507,13 +668,23 @@ def main(
         log_debug_to_file=write_debug_logs,
         stdout_log_level=logging.getLevelName(log_level),
     )
+    if ui_dry_run:
+        run_ui_dry_run(
+            site=site,
+            browser=browser,
+            allowsleep=allowsleep,
+            image_post_processing=image_post_processing,
+        )
+        return
+
+    print_phase(title="Running", step=2, total_steps=4, current_step="Initializing", replace_screen=True)
     try:
         with keepawake(keep_screen_awake=True) if not allowsleep else nullcontext():
-            logger.info("MPC Autofill desktop tool has successfully initialised!")
+            print_info("MPC Autofill desktop tool has successfully initialised.")
             if not allowsleep:
-                logger.info("System sleep is being prevented during this execution.")
+                print_info("System sleep prevention is enabled for this run.")
             if image_post_processing:
-                logger.info("Images are being post-processed during this execution.")
+                print_info("Image post-processing is enabled for this run.")
             target_site = TargetSites[site]
             post_processing_config = (
                 ImagePostProcessingConfig(max_dpi=max_dpi, downscale_alg=ImageResizeMethods[downscale_alg])

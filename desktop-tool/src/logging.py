@@ -2,6 +2,7 @@ import logging
 import os
 from copy import copy
 
+from src.cli_ui import add_debug_event, set_debug_mode
 from src.formatting import TEXT_BOLD, TEXT_END
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,17 @@ class FileLogFormatter(logging.Formatter):
         return super().format(new_record)
 
 
+class DebugEventBufferHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno != logging.DEBUG:
+            return
+        try:
+            message = self.format(record)
+            add_debug_event(message)
+        except Exception:
+            self.handleError(record)
+
+
 def configure_loggers(working_directory: str, log_debug_to_file: bool, stdout_log_level: int) -> None:
     logging.getLogger("googleapiclient").setLevel(logging.ERROR)
     logging.getLogger("oauth2client").setLevel(logging.ERROR)
@@ -24,12 +36,19 @@ def configure_loggers(working_directory: str, log_debug_to_file: bool, stdout_lo
 
     logging.raiseExceptions = False
 
+    # Avoid duplicate handlers across repeated setup calls (e.g. tests).
+    logger.handlers.clear()
+
     stdout_handler = logging.StreamHandler()
-    stdout_handler.setLevel(stdout_log_level)
+    stdout_handler.setLevel(logging.INFO if stdout_log_level <= logging.DEBUG else stdout_log_level)
     if stdout_log_level <= logging.DEBUG:
-        # If the user has opted into debug logging, format stdout logs with their log level
-        console_debug_format_string = "[%(levelname)s] %(message)s"
-        stdout_handler.setFormatter(logging.Formatter(console_debug_format_string))
+        set_debug_mode(True)
+        debug_buffer_handler = DebugEventBufferHandler()
+        debug_buffer_handler.setLevel(logging.DEBUG)
+        debug_buffer_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(debug_buffer_handler)
+    else:
+        set_debug_mode(False)
     logger.addHandler(stdout_handler)
 
     file_crash_logger = logging.FileHandler(os.path.join(working_directory, "autofill_crash_log.txt"))
