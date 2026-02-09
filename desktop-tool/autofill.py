@@ -27,10 +27,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from glob import glob
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import click
 import enlighten
+from InquirerPy import inquirer
 from wakepy import keepawake
 
 from src.constants import THREADS, Browsers, ImageResizeMethods, TargetSites
@@ -47,13 +48,10 @@ from src.web_server import WebServer
 # https://stackoverflow.com/questions/12492810/python-how-can-i-make-the-ansi-escape-codes-to-work-also-in-windows
 os.system("")  # enables ansi escape characters in terminal
 
-
-def prompt_if_no_arguments(prompt: str) -> Union[str, bool]:
-    """
-    We only prompt users to specify some flags if the tool was executed with no command-line arguments.
-    """
-
-    return f"{prompt} (Press Enter if you're not sure.)" if len(sys.argv) == 1 else False
+DEFAULT_BROWSER = Browsers.chrome.name
+DEFAULT_SITE = TargetSites.MakePlayingCards.name
+DEFAULT_AUTO_SAVE = True
+DEFAULT_IMAGE_POST_PROCESSING = True
 
 
 def get_default_dtc_icc_profile() -> Optional[str]:
@@ -247,14 +245,74 @@ def get_site_picker_choices() -> list[str]:
     ]
 
 
+def get_browser_picker_choices() -> list[str]:
+    return sorted([browser.name for browser in Browsers])
+
+
+def should_run_interactive_onboarding() -> bool:
+    return len(sys.argv) == 1 and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def run_interactive_onboarding() -> tuple[str, str, bool, bool]:
+    browser = inquirer.rawlist(
+        message=(
+            "Which web browser should the tool run on?\n"
+            f"Default: {DEFAULT_BROWSER}. If you're not sure, press Enter."
+        ),
+        choices=[{"name": browser_name, "value": browser_name} for browser_name in get_browser_picker_choices()],
+        default=DEFAULT_BROWSER,
+    ).execute()
+
+    site = inquirer.rawlist(
+        message=(
+            "Which site should the tool auto-fill your project into?\n"
+            f"Default: {DEFAULT_SITE}. If you're not sure, press Enter."
+        ),
+        choices=[{"name": site_name, "value": site_name} for site_name in get_site_picker_choices()],
+        default=DEFAULT_SITE,
+    ).execute()
+
+    auto_save = DEFAULT_AUTO_SAVE
+    if site != TargetSites.DriveThruCards.name:
+        auto_save = inquirer.rawlist(
+            message=(
+                "Automatically save this project to your account while the tool is running?\n"
+                f"Default: {'Yes' if DEFAULT_AUTO_SAVE else 'No'}. If you're not sure, press Enter."
+            ),
+            choices=[
+                {"name": "Yes", "value": True},
+                {"name": "No", "value": False},
+            ],
+            default=DEFAULT_AUTO_SAVE,
+        ).execute()
+
+    image_post_processing = DEFAULT_IMAGE_POST_PROCESSING
+    if site != TargetSites.DriveThruCards.name:
+        image_post_processing = inquirer.rawlist(
+            message=(
+                "Should the tool post-process your images to reduce upload times? "
+                "By default, images will be downscaled to 800 DPI.\n"
+                f"Default: {'Yes' if DEFAULT_IMAGE_POST_PROCESSING else 'No'}. If you're not sure, press Enter."
+            ),
+            choices=[
+                {"name": "Yes", "value": True},
+                {"name": "No", "value": False},
+            ],
+            default=DEFAULT_IMAGE_POST_PROCESSING,
+        ).execute()
+    else:
+        image_post_processing = False
+
+    return browser, site, auto_save, image_post_processing
+
+
 @click.command(context_settings={"show_default": True})
 @click.option("-d", "--directory", default=None, help="The directory to search for order XML files.")
 @click.option(
     "-b",
     "--browser",
-    prompt=prompt_if_no_arguments("Which web browser should the tool run on?"),
-    default=Browsers.chrome.name,
-    type=click.Choice(sorted([browser.name for browser in Browsers]), case_sensitive=False),
+    default=DEFAULT_BROWSER,
+    type=click.Choice(get_browser_picker_choices(), case_sensitive=False),
     help="The web browser to run the tool on.",
 )
 @click.option(
@@ -291,15 +349,13 @@ def get_site_picker_choices() -> list[str]:
 )
 @click.option(
     "--site",
-    prompt=prompt_if_no_arguments("Which site should the tool auto-fill your project into?"),
-    default=TargetSites.MakePlayingCards.name,
+    default=DEFAULT_SITE,
     type=click.Choice(get_site_picker_choices(), case_sensitive=False),
     help="The card printing site into which your order should be auto-filled.",
 )
 @click.option(
     "--auto-save/--no-auto-save",
-    prompt=prompt_if_no_arguments("Automatically save this project to your account while the tool is running?"),
-    default=True,
+    default=DEFAULT_AUTO_SAVE,
     help=(
         "If this flag is passed, the tool will automatically save your project to your account after "
         "processing each batch of cards."
@@ -338,11 +394,7 @@ def get_site_picker_choices() -> list[str]:
 )
 @click.option(
     "--image-post-processing/--no-image-post-processing",
-    default=True,
-    prompt=prompt_if_no_arguments(
-        "Should the tool post-process your images to reduce upload times? "
-        "By default, images will be downscaled to 800 DPI."
-    ),
+    default=DEFAULT_IMAGE_POST_PROCESSING,
     help="Post-process images to reduce file upload time.",
     is_flag=True,
 )
@@ -426,6 +478,9 @@ def main(
     write_debug_logs: bool,
     # convert_to_jpeg: bool,
 ) -> None:
+    if should_run_interactive_onboarding():
+        browser, site, auto_save, image_post_processing = run_interactive_onboarding()
+
     working_directory: str = DEFAULT_WORKING_DIRECTORY
     if directory:
         if not os.path.isdir(directory):

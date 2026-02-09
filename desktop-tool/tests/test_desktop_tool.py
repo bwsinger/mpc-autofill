@@ -444,6 +444,74 @@ def test_cli_help_documents_new_flags_and_stealth_guidance() -> None:
     assert "detailed Selenium step-by-step logs" in result.output
 
 
+def test_should_run_interactive_onboarding_only_when_no_args_and_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(autofill_cli.sys, "argv", ["autofill.py"])
+    monkeypatch.setattr(autofill_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(autofill_cli.sys.stdout, "isatty", lambda: True)
+    assert autofill_cli.should_run_interactive_onboarding() is True
+
+    monkeypatch.setattr(autofill_cli.sys, "argv", ["autofill.py", "--site", "MakePlayingCards"])
+    assert autofill_cli.should_run_interactive_onboarding() is False
+
+    monkeypatch.setattr(autofill_cli.sys, "argv", ["autofill.py"])
+    monkeypatch.setattr(autofill_cli.sys.stdin, "isatty", lambda: False)
+    assert autofill_cli.should_run_interactive_onboarding() is False
+
+
+def test_run_interactive_onboarding_uses_rawlist_number_jump_flow_for_non_dtc(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = []
+    responses = iter(["firefox", "MakePlayingCards", False, True])
+
+    class FakePrompt:
+        def __init__(self, value):
+            self.value = value
+
+        def execute(self):
+            return self.value
+
+    def fake_rawlist(*, message, choices, default):
+        prompts.append({"message": message, "choices": choices, "default": default})
+        return FakePrompt(next(responses))
+
+    monkeypatch.setattr(autofill_cli.inquirer, "rawlist", fake_rawlist)
+
+    browser, site, auto_save, image_post_processing = autofill_cli.run_interactive_onboarding()
+
+    assert browser == "firefox"
+    assert site == "MakePlayingCards"
+    assert auto_save is False
+    assert image_post_processing is True
+    assert len(prompts) == 4
+    assert prompts[0]["default"] == autofill_cli.DEFAULT_BROWSER
+    assert prompts[1]["default"] == autofill_cli.DEFAULT_SITE
+
+
+def test_run_interactive_onboarding_skips_auto_save_question_for_dtc(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = []
+    responses = iter(["firefox", "DriveThruCards"])
+
+    class FakePrompt:
+        def __init__(self, value):
+            self.value = value
+
+        def execute(self):
+            return self.value
+
+    def fake_rawlist(*, message, choices, default):
+        prompts.append({"message": message, "choices": choices, "default": default})
+        return FakePrompt(next(responses))
+
+    monkeypatch.setattr(autofill_cli.inquirer, "rawlist", fake_rawlist)
+
+    browser, site, auto_save, image_post_processing = autofill_cli.run_interactive_onboarding()
+
+    assert browser == "firefox"
+    assert site == "DriveThruCards"
+    assert auto_save is autofill_cli.DEFAULT_AUTO_SAVE
+    assert image_post_processing is False
+    assert len(prompts) == 2
+
+
 def test_cli_site_choices_list_drivethrucards_last() -> None:
     result = CliRunner().invoke(autofill_cli.main, ["--help"])
     assert result.exit_code == 0
