@@ -2,8 +2,12 @@ name: Desktop tool tests
 description: Test the MPC Autofill CLI / desktop tool
 inputs:
   google-drive-api-key:
-    description: Your Google Drive API key, required for running the database crawler
-    required: true
+    description: Service-account JSON, required only for Google Drive tests
+    required: false
+  pytest-marker:
+    description: Pytest marker expression; empty runs all tests
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -30,12 +34,18 @@ runs:
         pip install -r requirements.txt
       shell: bash
     - name: Write Google Drive API credentials to file
+      if: inputs.google-drive-api-key != ''
       uses: jsdaniell/create-json@v1.2.3
       with:
         name: "client_secrets.json"
         json: ${{ inputs.google-drive-api-key }}
         dir: "desktop-tool/"
+    - name: Validate Google Drive credentials
+      if: inputs.pytest-marker != 'not google_drive'
+      working-directory: desktop-tool
+      run: python -c "from src.io import validate_google_drive_access; validate_google_drive_access('1oigI6wz0zA--pNMuExKTs40kBNH6VRP_')"
+      shell: bash
     - name: Run tests
       working-directory: desktop-tool
-      run: pytest .
+      run: pytest . -m "${{ inputs.pytest-marker }}"
       shell: bash

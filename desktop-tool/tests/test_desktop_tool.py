@@ -4,11 +4,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import groupby
 from queue import Queue
+from types import SimpleNamespace
 from typing import Callable, Generator
 from xml.etree import ElementTree
 
 import pytest
 from enlighten import Counter
+from googleapiclient.errors import HttpError
+from oauth2client.client import HttpAccessTokenRefreshError
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
@@ -19,7 +22,13 @@ from src.constants import OrderFulfilmentMethod, SourceType
 from src.driver import AutofillDriver
 from src.exc import ValidationException
 from src.formatting import text_to_set
-from src.io import get_google_drive_file_name, remove_directories, remove_files
+from src.io import (
+    find_or_create_google_drive_service,
+    get_google_drive_file_name,
+    remove_directories,
+    remove_files,
+    validate_google_drive_access,
+)
 from src.order import (
     CardImage,
     CardImageCollection,
@@ -375,10 +384,11 @@ def card_order_element_valid() -> Generator[ElementTree.Element, None, None]:
                 </details>
                 <fronts>
                     <card>
-                        <id>{SIMPLE_CUBE_ID}</id>
+                        <id>{os.path.join(CARDS_FILE_PATH, TEST_IMAGE)}.png</id>
+                        <sourceType>{SourceType.LOCAL_FILE}</sourceType>
                         <slots>0</slots>
-                        <name>{SIMPLE_CUBE}.png</name>
-                        <query>simple cube</query>
+                        <name>{TEST_IMAGE}.png</name>
+                        <query>test image</query>
                     </card>
                     <card>
                         <id>{SIMPLE_LOTUS_ID}</id>
@@ -434,7 +444,7 @@ def card_order_element_multiple_cardbacks() -> Generator[ElementTree.Element, No
                         <query>simple lotus</query>
                     </card>
                 </backs>
-                <cardback>{SIMPLE_CUBE_ID}</cardback>
+                <cardback>{os.path.join(CARDS_FILE_PATH, TEST_IMAGE)}.png</cardback>
             </order>
             """
         )
@@ -523,6 +533,59 @@ def card_order_element_missing_front_image() -> Generator[ElementTree.Element, N
 # region test utils.py
 
 
+@pytest.mark.parametrize(
+    "contents, expected",
+    [
+        (None, "missing"),
+        ("", "empty"),
+        ("{", "invalid JSON"),
+        ('{"type":"service_account"}', "missing required service-account field"),
+    ],
+)
+def test_google_drive_credentials_preflight(monkeypatch: pytest.MonkeyPatch, tmp_path, contents, expected):
+    credentials_path = tmp_path / "client_secrets.json"
+    if contents is not None:
+        credentials_path.write_text(contents)
+    monkeypatch.setattr(constants, "SERVICE_ACC_FILENAME", str(credentials_path))
+    monkeypatch.delattr(src.io.thread_local, "google_drive_service", raising=False)
+
+    with pytest.raises(RuntimeError, match=expected) as error:
+        find_or_create_google_drive_service()
+
+    assert str(credentials_path) in str(error.value)
+    assert "Do not commit" in str(error.value)
+    assert "gh secret set GOOGLE_DRIVE_API_KEY" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "api_error, expected",
+    [
+        (HttpAccessTokenRefreshError("bad token"), "rejected by Google"),
+        (
+            HttpError(SimpleNamespace(status=403, reason="Forbidden"), b'{"error":"accessNotConfigured"}'),
+            "API is disabled",
+        ),
+        (HttpError(SimpleNamespace(status=404, reason="Not Found"), b"{}"), "cannot access"),
+    ],
+)
+def test_google_drive_access_preflight(monkeypatch: pytest.MonkeyPatch, api_error, expected):
+    class FailingService:
+        def files(self):
+            return self
+
+        def get(self, **kwargs):
+            return self
+
+        def execute(self):
+            raise api_error
+
+    monkeypatch.setattr("src.io.find_or_create_google_drive_service", FailingService)
+
+    with pytest.raises(RuntimeError, match=expected):
+        validate_google_drive_access(SIMPLE_LOTUS_ID)
+
+
+@pytest.mark.google_drive
 def test_get_google_drive_file_name():
     assert get_google_drive_file_name(SIMPLE_LOTUS_ID) == f"{SIMPLE_LOTUS}.png"
     assert get_google_drive_file_name(SIMPLE_CUBE_ID) == f"{SIMPLE_CUBE}.png"
@@ -553,6 +616,7 @@ def test_generate_file_path_infer_local_file(image_element_local_file_inferred_t
     assert image.source_type == SourceType.LOCAL_FILE
 
 
+@pytest.mark.google_drive
 def test_download_google_drive_image_default_post_processing(
     image_valid_google_drive: CardImage, counter: Counter, queue: Queue[CardImage]
 ):
@@ -573,6 +637,7 @@ def test_download_local_file_is_no_op(image_local_file: CardImage, counter: Coun
     assert_file_size(image_local_file.file_path, file_size)
 
 
+@pytest.mark.google_drive
 def test_download_google_drive_image_downscaled(
     image_valid_google_drive: CardImage, counter: Counter, queue: Queue[CardImage]
 ):
@@ -588,6 +653,7 @@ def test_download_google_drive_image_downscaled(
     assert_file_size(image_valid_google_drive.file_path, 51123)
 
 
+@pytest.mark.google_drive
 def test_download_google_drive_image_no_post_processing(
     image_valid_google_drive: CardImage, counter: Counter, queue: Queue[CardImage]
 ):
@@ -597,6 +663,7 @@ def test_download_google_drive_image_no_post_processing(
     assert_file_size(image_valid_google_drive.file_path, 155686)
 
 
+@pytest.mark.google_drive
 def test_invalid_google_drive_image(image_invalid_google_drive: CardImage, counter: Counter, queue: Queue[CardImage]):
     image_invalid_google_drive.download_image(
         download_bar=counter, queue=queue, post_processing_config=DEFAULT_POST_PROCESSING
@@ -604,6 +671,7 @@ def test_invalid_google_drive_image(image_invalid_google_drive: CardImage, count
     assert image_invalid_google_drive.errored is True
 
 
+@pytest.mark.google_drive
 def test_retrieve_card_name_and_download_file(image_google_valid_drive_no_name, counter, queue):
     assert image_google_valid_drive_no_name.name == f"{SIMPLE_CUBE}.png"
     assert not image_google_valid_drive_no_name.file_exists()
@@ -644,6 +712,7 @@ def test_combine_images(image_a, image_b, expected_result):
 # region test CardImageCollection
 
 
+@pytest.mark.google_drive
 def test_card_image_collection_download(card_image_collection_valid, counter, image_google_valid_drive_no_name, pool):
     assert card_image_collection_valid.slots() == {0, 1, 2}
     assert [x.file_exists() for x in card_image_collection_valid.cards_by_id.values()] == [False, True]
@@ -706,12 +775,13 @@ def test_card_order_valid(card_order_valid):
                 face=constants.Faces.front,
                 num_slots=3,
                 cards_by_id={
-                    SIMPLE_CUBE_ID: CardImage(
-                        drive_id=SIMPLE_CUBE_ID,
+                    os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"): CardImage(
+                        drive_id=os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"),
+                        source_type=SourceType.LOCAL_FILE,
                         slots={0},
-                        name=f"{SIMPLE_CUBE}.png",
-                        file_path=os.path.join(CARDS_FILE_PATH, f"{SIMPLE_CUBE} ({SIMPLE_CUBE_ID}).png"),  # not on disk
-                        query="simple cube",
+                        name=f"{TEST_IMAGE}.png",
+                        file_path=os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"),
+                        query="test image",
                     ),
                     SIMPLE_LOTUS_ID: CardImage(
                         drive_id=SIMPLE_LOTUS_ID,
@@ -779,11 +849,12 @@ def test_card_order_multiple_cardbacks(card_order_multiple_cardbacks):
                         file_path=os.path.join(CARDS_FILE_PATH, f"{SIMPLE_LOTUS}.png"),  # already exists on disk
                         query="simple lotus",
                     ),
-                    SIMPLE_CUBE_ID: CardImage(
-                        drive_id=SIMPLE_CUBE_ID,
+                    os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"): CardImage(
+                        drive_id=os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"),
+                        source_type=SourceType.LOCAL_FILE,
                         slots={0, 2, 3},
-                        name=f"{SIMPLE_CUBE}.png",
-                        file_path=os.path.join(CARDS_FILE_PATH, f"{SIMPLE_CUBE} ({SIMPLE_CUBE_ID}).png"),  # not on disk
+                        name=f"{TEST_IMAGE}.png",
+                        file_path=os.path.join(CARDS_FILE_PATH, f"{TEST_IMAGE}.png"),
                         query=None,
                     ),
                 },
@@ -792,7 +863,8 @@ def test_card_order_multiple_cardbacks(card_order_multiple_cardbacks):
     )
 
 
-def test_card_order_valid_from_file():
+def test_card_order_valid_from_file(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("src.order.get_google_drive_file_name", lambda drive_id: "MTGA Lotus.png")
     card_order = CardOrder.from_file_path(working_directory=FILE_PATH, file_path="test_order.xml")
     for card in (card_order.fronts.cards_by_id | card_order.backs.cards_by_id).values():
         assert not card.file_exists()

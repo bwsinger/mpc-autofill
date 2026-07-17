@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import threading
@@ -10,6 +11,7 @@ import requests
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
+from oauth2client.client import HttpAccessTokenRefreshError
 from oauth2client.service_account import ServiceAccountCredentials
 
 import src.constants as constants
@@ -22,16 +24,58 @@ thread_local = threading.local()  # Should only be called once per thread
 # region Google Drive API
 
 
+def _google_drive_credentials_error(problem: str, path: Path) -> RuntimeError:
+    return RuntimeError(
+        f"Google Drive credentials {problem}: {path}\n"
+        "Setup: https://github.com/chilli-axe/mpc-autofill/wiki/Desktop-Tool#local-environment-setup\n"
+        "Do not commit this file. For fork CI, run: "
+        "gh secret set GOOGLE_DRIVE_API_KEY --repo OWNER/mpc-autofill < desktop-tool/client_secrets.json"
+    )
+
+
 def find_or_create_google_drive_service() -> Resource:
     if (service := getattr(thread_local, "google_drive_service", None)) is None:
+        credentials_path = Path(os.path.abspath(__file__)).parent.parent / constants.SERVICE_ACC_FILENAME
+        if not credentials_path.is_file():
+            raise _google_drive_credentials_error("are missing", credentials_path)
+        if credentials_path.stat().st_size == 0:
+            raise _google_drive_credentials_error("file is empty", credentials_path)
+
         logger.debug("Getting Google Drive API credentials...")
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            str(Path(os.path.abspath(__file__)).parent.parent / constants.SERVICE_ACC_FILENAME), scopes=constants.SCOPES
-        )
+        try:
+            creds = ServiceAccountCredentials.from_json_keyfile_name(str(credentials_path), scopes=constants.SCOPES)
+        except json.JSONDecodeError as error:
+            raise _google_drive_credentials_error("contain invalid JSON", credentials_path) from error
+        except KeyError as error:
+            raise _google_drive_credentials_error(
+                f"are missing required service-account field {error}", credentials_path
+            ) from error
+        except (OSError, ValueError) as error:
+            raise _google_drive_credentials_error("are not a valid service-account key", credentials_path) from error
         service = build("drive", "v3", credentials=creds, static_discovery=False, cache_discovery=False)
         logger.debug("Finished getting Google Drive API credentials - saving to thread local storage.")
         thread_local.google_drive_service = service
     return service
+
+
+def validate_google_drive_access(drive_id: str) -> None:
+    credentials_path = Path(os.path.abspath(__file__)).parent.parent / constants.SERVICE_ACC_FILENAME
+    try:
+        find_or_create_google_drive_service().files().get(fileId=drive_id, fields="id").execute()
+    except HttpAccessTokenRefreshError as error:
+        raise _google_drive_credentials_error("were rejected by Google", credentials_path) from error
+    except HttpError as error:
+        status = int(error.resp.status)
+        details = error.content.decode(errors="replace").lower()
+        if status == 401:
+            problem = "were rejected by Google"
+        elif status == 403 and ("accessnotconfigured" in details or "disabled" in details):
+            problem = "cannot be used because the Google Drive API is disabled"
+        elif status in (403, 404):
+            problem = "cannot access the known test fixture"
+        else:
+            problem = f"failed the access check with HTTP {status}"
+        raise _google_drive_credentials_error(problem, credentials_path) from error
 
 
 @ratelimit.sleep_and_retry  # type: ignore  # `ratelimit` does not implement decorator typing correctly
