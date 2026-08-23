@@ -67,6 +67,7 @@ class AutofillDriver:
     # internal properties (init=False)
     state: str = attr.ib(init=False, default=States.initialising)
     action: Optional[str] = attr.ib(init=False, default=None)
+    dtc_publisher_name: Optional[str] = attr.ib(init=False, default=None)
     manager: enlighten.Manager = attr.ib(init=False, default=attr.Factory(enlighten.get_manager))
     status_bar: enlighten.StatusBar = attr.ib(init=False, default=False)
     order_progress_bar: enlighten.Counter = attr.ib(init=False, default=None)
@@ -602,6 +603,24 @@ class AutofillDriver:
         selectors = self.target_site.value.selectors
         return self.click_element_polling(By.CSS_SELECTOR, selectors.login_button_selector, timeout=15)
 
+    def _capture_dtc_publisher_name(self) -> None:
+        """Remember a readable publisher name from the email entered by the user."""
+        if self.dtc_publisher_name:
+            return
+        try:
+            email_inputs = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "input[type='email'], input[name='email'], input[name='email_address']",
+            )
+            for email_input in email_inputs:
+                local_part, separator, _domain = (email_input.get_attribute("value") or "").strip().partition("@")
+                publisher_name = re.sub(r"[._+-]+", " ", local_part).strip().title()
+                if separator and publisher_name:
+                    self.dtc_publisher_name = publisher_name
+                    return
+        except Exception:
+            pass
+
     def authenticate_dtc(self) -> bool:
         """
         Handle DriveThruCards login flow.
@@ -633,6 +652,7 @@ class AutofillDriver:
         timeout_seconds = 300
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
+            self._capture_dtc_publisher_name()
             time.sleep(1)
             if self.is_dtc_user_authenticated():
                 logger.info("Successfully logged in to DriveThruCards!")
@@ -682,8 +702,16 @@ class AutofillDriver:
         publisher_name_input = WebDriverWait(self.driver, 30).until(
             presence_of_element_located((By.XPATH, publisher_name_xpath))
         )
+        publisher_name = self.dtc_publisher_name
+        if not publisher_name:
+            publisher_name = inquirer.text(
+                message="DriveThruCards publisher name (your name or brand):",
+            ).execute().strip()
+        if not publisher_name:
+            raise ValueError("A publisher account name is required.")
+        self.dtc_publisher_name = publisher_name
         publisher_name_input.clear()
-        publisher_name_input.send_keys("MPC Autofill Publisher")
+        publisher_name_input.send_keys(publisher_name)
 
         agreement_xpath = (
             "//input[@type='checkbox' and "

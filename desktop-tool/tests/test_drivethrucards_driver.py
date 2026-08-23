@@ -68,6 +68,15 @@ def test_authenticate_dtc_returns_immediately_when_already_logged_in(dtc_driver:
     assert dtc_driver.authenticate_dtc() is True
 
 
+def test_capture_dtc_publisher_name_uses_readable_email_local_part(dtc_driver: AutofillDriver) -> None:
+    email_input = SimpleNamespace(get_attribute=lambda name: "bradley.smith-42@example.com")
+    dtc_driver.driver = SimpleNamespace(find_elements=lambda by, selector: [email_input])
+
+    dtc_driver._capture_dtc_publisher_name()
+
+    assert dtc_driver.dtc_publisher_name == "Bradley Smith 42"
+
+
 def test_authenticated_selector_matches_current_account_menu() -> None:
     selector = TargetSites.DriveThruCards.value.selectors.authenticated_indicator_selector
 
@@ -263,6 +272,7 @@ def test_ensure_dtc_publisher_account_automates_wizard(
     publisher_name = PublisherNameInput()
     agreement = AgreementCheckbox()
     ready_checks = iter([False, True])
+    dtc_driver.dtc_publisher_name = "Bradley Smith 42"
     dtc_driver.is_dtc_publisher_ready = lambda: next(ready_checks)
     dtc_driver.driver = SimpleNamespace(get=lambda url: calls.append(("get", url)))
 
@@ -298,7 +308,7 @@ def test_ensure_dtc_publisher_account_automates_wizard(
 
     assert calls[0] == ("get", "https://www.drivethrucards.com/joinchoice.php")
     assert len([call for call in calls if call[0] == "click"]) == 3
-    assert publisher_name.value == "MPC Autofill Publisher"
+    assert publisher_name.value == "Bradley Smith 42"
     assert agreement.clicked is True
 
 
