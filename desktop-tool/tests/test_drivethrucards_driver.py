@@ -84,6 +84,24 @@ def test_authenticated_selector_matches_current_account_menu() -> None:
     assert "[aria-label='Log Out']" in selector
 
 
+def test_publisher_ready_accepts_visible_publish_navigation(dtc_driver: AutofillDriver) -> None:
+    waits = []
+
+    class FakeWebDriver:
+        def implicitly_wait(self, value: int) -> None:
+            waits.append(value)
+
+        def find_elements(self, by: By, selector: str):
+            if by == By.XPATH and "normalize-space()='Publish'" in selector:
+                return [SimpleNamespace(is_displayed=lambda: True)]
+            return []
+
+    dtc_driver.driver = FakeWebDriver()
+
+    assert dtc_driver.is_dtc_publisher_ready() is True
+    assert waits == [0, 5]
+
+
 def test_authenticate_dtc_opens_login_pane_then_waits(
     monkeypatch: pytest.MonkeyPatch, dtc_driver: AutofillDriver
 ) -> None:
@@ -126,11 +144,38 @@ def test_prepare_drive_thru_cards_session_raises_when_login_not_completed(dtc_dr
 
 
 def test_execute_drive_thru_cards_order_wraps_step_failures_with_context(dtc_driver: AutofillDriver) -> None:
+    page_states = []
     dtc_driver.driver = SimpleNamespace()
+    dtc_driver._log_dtc_page_state = lambda context: page_states.append(context)
     dtc_driver.navigate_to_dtc_product_setup = lambda: (_ for _ in ()).throw(RuntimeError("new UI mismatch"))
 
     with pytest.raises(Exception, match="step 'navigate_to_dtc_product_setup' failed"):
         dtc_driver.execute_drive_thru_cards_order(order=SimpleNamespace(name="x"), pdf_path="/tmp/x.pdf")
+    assert page_states == ["before navigate_to_dtc_product_setup", "failed navigate_to_dtc_product_setup"]
+
+
+def test_log_dtc_page_state_reports_load_and_blocking_without_url_query(
+    monkeypatch: pytest.MonkeyPatch, dtc_driver: AutofillDriver
+) -> None:
+    messages = []
+    dtc_driver.driver = SimpleNamespace(
+        current_url="https://example.com/setup?account_token=secret",
+        title="Publisher setup",
+        execute_script=lambda _script: "complete",
+        get_log=lambda _kind: [
+            {"level": "SEVERE", "message": "net::ERR_BLOCKED_BY_CLIENT https://ads.example/script.js"},
+            {"level": "INFO", "message": "ordinary console message"},
+        ],
+    )
+    monkeypatch.setattr("src.driver.logger.debug", lambda message: messages.append(message))
+
+    dtc_driver._log_dtc_page_state("failed setup")
+
+    assert messages == [
+        "DriveThruCards page [failed setup]: url=https://example.com/setup, title='Publisher setup', "
+        "ready_state=complete, browser_errors=1, blocked_by_client=1"
+    ]
+    assert "secret" not in messages[0]
 
 
 def test_initialise_driver_retries_when_initial_window_is_already_closed(
@@ -249,8 +294,15 @@ def test_wait_for_cloudflare_challenge_raises_on_timeout(
         dtc_driver.wait_for_cloudflare_challenge(timeout_seconds=1)
 
 
-def test_ensure_dtc_publisher_account_automates_wizard(
-    monkeypatch: pytest.MonkeyPatch, dtc_driver: AutofillDriver
+@pytest.mark.parametrize(
+    ("ready_checks", "expected_click_count"),
+    [([False, True], 2), ([False, False, True], 3)],
+)
+def test_ensure_dtc_publisher_account_automates_both_wizard_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    dtc_driver: AutofillDriver,
+    ready_checks: list[bool],
+    expected_click_count: int,
 ) -> None:
     calls = []
 
@@ -271,9 +323,9 @@ def test_ensure_dtc_publisher_account_automates_wizard(
 
     publisher_name = PublisherNameInput()
     agreement = AgreementCheckbox()
-    ready_checks = iter([False, True])
+    readiness = iter(ready_checks)
     dtc_driver.dtc_publisher_name = "Bradley Smith 42"
-    dtc_driver.is_dtc_publisher_ready = lambda: next(ready_checks)
+    dtc_driver.is_dtc_publisher_ready = lambda: next(readiness)
     dtc_driver.driver = SimpleNamespace(get=lambda url: calls.append(("get", url)))
 
     def fake_click(by: By, selector: str, timeout: int = 30) -> bool:
@@ -307,7 +359,7 @@ def test_ensure_dtc_publisher_account_automates_wizard(
     dtc_driver.ensure_dtc_publisher_account()
 
     assert calls[0] == ("get", "https://www.drivethrucards.com/joinchoice.php")
-    assert len([call for call in calls if call[0] == "click"]) == 3
+    assert len([call for call in calls if call[0] == "click"]) == expected_click_count
     assert publisher_name.value == "Bradley Smith 42"
     assert agreement.clicked is True
 
