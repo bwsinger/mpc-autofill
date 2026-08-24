@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import cache
 from typing import Any, Generator, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import attr
 import enlighten
@@ -67,6 +68,7 @@ class AutofillDriver:
     # internal properties (init=False)
     state: str = attr.ib(init=False, default=States.initialising)
     action: Optional[str] = attr.ib(init=False, default=None)
+    dtc_publisher_name: Optional[str] = attr.ib(init=False, default=None)
     manager: enlighten.Manager = attr.ib(init=False, default=attr.Factory(enlighten.get_manager))
     status_bar: enlighten.StatusBar = attr.ib(init=False, default=False)
     order_progress_bar: enlighten.Counter = attr.ib(init=False, default=None)
@@ -521,9 +523,16 @@ class AutofillDriver:
         selectors = self.target_site.value.selectors
         try:
             with self.no_implicit_wait():
+                publisher_links = self.driver.find_elements(
+                    By.XPATH,
+                    "//*[self::a or self::button]"
+                    "[normalize-space()='Publish' or normalize-space()='Publisher Tools']",
+                )
                 return any(
                     element.is_displayed()  # type: ignore[no-untyped-call]
-                    for element in self.driver.find_elements(By.CSS_SELECTOR, selectors.publisher_ready_selector)
+                    for element in (
+                        self.driver.find_elements(By.CSS_SELECTOR, selectors.publisher_ready_selector) + publisher_links
+                    )
                 )
         except Exception as exc:
             logger.debug(f"Error checking publisher status: {exc}")
@@ -604,6 +613,24 @@ class AutofillDriver:
         selectors = self.target_site.value.selectors
         return self.click_element_polling(By.CSS_SELECTOR, selectors.login_button_selector, timeout=15)
 
+    def _capture_dtc_publisher_name(self) -> None:
+        """Remember the email local-part as the publisher name."""
+        if self.dtc_publisher_name:
+            return
+        try:
+            email_inputs = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "input[type='email'], input[name='email'], input[name='email_address']",
+            )
+            for email_input in email_inputs:
+                local_part, separator, _domain = (email_input.get_attribute("value") or "").strip().partition("@")
+                publisher_name = local_part
+                if separator and publisher_name:
+                    self.dtc_publisher_name = publisher_name
+                    return
+        except Exception:
+            pass
+
     def authenticate_dtc(self) -> bool:
         """
         Handle DriveThruCards login flow.
@@ -635,6 +662,7 @@ class AutofillDriver:
         timeout_seconds = 300
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
+            self._capture_dtc_publisher_name()
             time.sleep(1)
             if self.is_dtc_user_authenticated():
                 logger.info("Successfully logged in to DriveThruCards!")
@@ -684,8 +712,20 @@ class AutofillDriver:
         publisher_name_input = WebDriverWait(self.driver, 30).until(
             presence_of_element_located((By.XPATH, publisher_name_xpath))
         )
+        publisher_name = self.dtc_publisher_name
+        if not publisher_name:
+            publisher_name = (
+                inquirer.text(
+                    message="DriveThruCards publisher name (your name or brand):",
+                )
+                .execute()
+                .strip()
+            )
+        if not publisher_name:
+            raise ValueError("A publisher account name is required.")
+        self.dtc_publisher_name = publisher_name
         publisher_name_input.clear()
-        publisher_name_input.send_keys("MPC Autofill Publisher")
+        publisher_name_input.send_keys(publisher_name)
 
         agreement_xpath = (
             "//input[@type='checkbox' and "
@@ -705,8 +745,13 @@ class AutofillDriver:
         if not self.click_element_polling(By.XPATH, setup_xpath, timeout=30):
             raise Exception("Could not submit the publisher agreement.")
 
+        # Some accounts finish setup here and never show the payment-info page.
+        if self.is_dtc_publisher_ready():
+            logger.info("DriveThruCards publisher account setup is complete.")
+            return
+
         save_xpath = "//*[self::button or self::input]" "[normalize-space(.)='Save' or @value='Save']"
-        if not self.click_element_polling(By.XPATH, save_xpath, timeout=30):
+        if not self.click_element_polling(By.XPATH, save_xpath, timeout=30) and not self.is_dtc_publisher_ready():
             raise Exception("Could not save the publisher payment information.")
 
         try:
@@ -1021,12 +1066,39 @@ class AutofillDriver:
             self.driver.execute_script("arguments[0].click();", buy_now_link)  # type: ignore[no-untyped-call]
             logger.debug("Clicked 'buy now' link.")
 
-    @staticmethod
-    def _run_dtc_step(step_name: str, func: Any, *args: Any, **kwargs: Any) -> Any:
+    def _log_dtc_page_state(self, context: str) -> None:
+        current_url = str(getattr(self.driver, "current_url", "unavailable"))
+        parsed_url = urlsplit(current_url)
+        safe_url = urlunsplit((parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", ""))
+        title = getattr(self.driver, "title", "unavailable")
         try:
-            return func(*args, **kwargs)
+            ready_state = self.driver.execute_script("return document.readyState")
+        except Exception:
+            ready_state = "unavailable"
+        try:
+            browser_errors = [
+                entry
+                for entry in self.driver.get_log("browser")
+                if entry.get("level") == "SEVERE" or "ERR_BLOCKED_BY_CLIENT" in entry.get("message", "")
+            ]
+        except Exception:
+            browser_errors = []
+        blocked_by_client = sum("ERR_BLOCKED_BY_CLIENT" in entry.get("message", "") for entry in browser_errors)
+        logger.debug(
+            f"DriveThruCards page [{context}]: url={safe_url}, title={title!r}, "
+            f"ready_state={ready_state}, browser_errors={len(browser_errors)}, "
+            f"blocked_by_client={blocked_by_client}"
+        )
+
+    def _run_dtc_step(self, step_name: str, func: Any, *args: Any, **kwargs: Any) -> Any:
+        self._log_dtc_page_state(f"before {step_name}")
+        try:
+            result = func(*args, **kwargs)
         except Exception as exc:
+            self._log_dtc_page_state(f"failed {step_name}")
             raise Exception(f"DriveThruCards step '{step_name}' failed: {exc}") from exc
+        self._log_dtc_page_state(f"after {step_name}")
+        return result
 
     def prepare_drive_thru_cards_session(self) -> None:
         self.set_state(States.defining_order, "Opening DriveThruCards")

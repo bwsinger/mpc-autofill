@@ -526,6 +526,7 @@ def test_get_undetected_chrome_driver_applies_user_profile_options(monkeypatch: 
     assert captured["options"].binary_location == "/tmp/chrome"
     assert "--user-data-dir=/tmp/chrome-data" in captured["options"].arguments
     assert "--profile-directory=Profile 7" in captured["options"].arguments
+    assert captured["options"].capabilities["goog:loggingPrefs"] == {"browser": "ALL"}
     assert captured["version_main"] == 120
 
 
