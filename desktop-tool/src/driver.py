@@ -614,7 +614,7 @@ class AutofillDriver:
         return self.click_element_polling(By.CSS_SELECTOR, selectors.login_button_selector, timeout=15)
 
     def _capture_dtc_publisher_name(self) -> None:
-        """Remember a readable publisher name from the email entered by the user."""
+        """Remember the email local-part as the publisher name."""
         if self.dtc_publisher_name:
             return
         try:
@@ -624,7 +624,7 @@ class AutofillDriver:
             )
             for email_input in email_inputs:
                 local_part, separator, _domain = (email_input.get_attribute("value") or "").strip().partition("@")
-                publisher_name = re.sub(r"[._+-]+", " ", local_part).strip().title()
+                publisher_name = local_part
                 if separator and publisher_name:
                     self.dtc_publisher_name = publisher_name
                     return
