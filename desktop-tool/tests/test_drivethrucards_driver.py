@@ -5,8 +5,9 @@ import pytest
 from selenium.common import exceptions as sl_exc
 from selenium.webdriver.common.by import By
 
-from src.constants import TargetSites
+from src.constants import States, TargetSites
 from src.driver import AutofillDriver
+from src.webdrivers import _detect_chrome_version
 
 
 @pytest.fixture
@@ -38,7 +39,9 @@ def test_prepare_drive_thru_cards_session_runs_expected_sequence(dtc_driver: Aut
 
 def test_execute_drive_thru_cards_order_runs_expected_sequence(dtc_driver: AutofillDriver) -> None:
     calls = []
+    states = []
     dtc_driver.driver = SimpleNamespace()
+    dtc_driver.set_state = lambda state, action=None: states.append((state, action))
 
     dtc_driver.navigate_to_dtc_product_setup = lambda: calls.append(("navigate_to_dtc_product_setup",))
     dtc_driver.fill_dtc_product_form = lambda order: calls.append(("fill_dtc_product_form", order.name))
@@ -56,6 +59,7 @@ def test_execute_drive_thru_cards_order_runs_expected_sequence(dtc_driver: Autof
         ("open_dtc_upload_page",),
         ("upload_pdf", "/tmp/order.pdf"),
     ]
+    assert states[-1] == (States.finished, "Product setup complete")
 
 
 def test_authenticate_dtc_returns_immediately_when_already_logged_in(dtc_driver: AutofillDriver) -> None:
@@ -294,74 +298,33 @@ def test_wait_for_cloudflare_challenge_raises_on_timeout(
         dtc_driver.wait_for_cloudflare_challenge(timeout_seconds=1)
 
 
-@pytest.mark.parametrize(
-    ("ready_checks", "expected_click_count"),
-    [([False, True], 2), ([False, False, True], 3)],
-)
-def test_ensure_dtc_publisher_account_automates_both_wizard_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    dtc_driver: AutofillDriver,
-    ready_checks: list[bool],
-    expected_click_count: int,
+def test_ensure_dtc_publisher_account_waits_for_manual_agreement(
+    monkeypatch: pytest.MonkeyPatch, dtc_driver: AutofillDriver
 ) -> None:
     calls = []
-
-    class PublisherNameInput:
-        value = ""
-
-        def clear(self) -> None:
-            self.value = ""
-
-        def send_keys(self, value: str) -> None:
-            self.value = value
-
-    class AgreementCheckbox:
-        clicked = False
-
-        def is_selected(self) -> bool:
-            return False
-
-    publisher_name = PublisherNameInput()
-    agreement = AgreementCheckbox()
-    readiness = iter(ready_checks)
+    publisher_name = _FakeElement()
+    readiness = iter([False, True])
     dtc_driver.dtc_publisher_name = "bradley.smith-42"
     dtc_driver.is_dtc_publisher_ready = lambda: next(readiness)
     dtc_driver.driver = SimpleNamespace(get=lambda url: calls.append(("get", url)))
-
-    def fake_click(by: By, selector: str, timeout: int = 30) -> bool:
-        calls.append(("click", by, selector, timeout))
-        return True
-
-    dtc_driver.click_element_polling = fake_click
-
-    def fake_click_with_retry(element) -> bool:
-        element.clicked = True
-        return True
-
-    dtc_driver.click_element_with_retry = fake_click_with_retry
+    dtc_driver.click_element_polling = lambda by, selector, timeout=30: calls.append(("click", selector)) or True
+    dtc_driver.click_element_with_retry = lambda element: pytest.fail("Agreement must be accepted by the user")
 
     class FakeWait:
-        count = 0
-
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
+        def __init__(self, _driver, timeout, **_kwargs):
+            self.timeout = timeout
 
         def until(self, condition):
-            FakeWait.count += 1
-            if FakeWait.count == 1:
-                return publisher_name
-            if FakeWait.count == 2:
-                return agreement
-            return condition(dtc_driver.driver)
+            calls.append(("wait", self.timeout))
+            return publisher_name if self.timeout == 30 else condition(dtc_driver.driver)
 
     monkeypatch.setattr("src.driver.WebDriverWait", FakeWait)
-
     dtc_driver.ensure_dtc_publisher_account()
 
-    assert calls[0] == ("get", "https://www.drivethrucards.com/joinchoice.php")
-    assert len([call for call in calls if call[0] == "click"]) == expected_click_count
-    assert publisher_name.value == "bradley.smith-42"
-    assert agreement.clicked is True
+    assert publisher_name.sent == ["bradley.smith-42"]
+    assert len([call for call in calls if call[0] == "click"]) == 1
+    assert "Non-Exclusive" in next(call[1] for call in calls if call[0] == "click")
+    assert ("wait", 600) in calls
 
 
 def test_open_dtc_upload_page_extracts_window_open_url(
@@ -589,3 +552,44 @@ def test_initialise_bars_creates_only_status_bar_for_dtc(monkeypatch: pytest.Mon
     assert mpc.order_progress_bar is not None
     assert mpc.download_bar is not None
     assert mpc.upload_bar is not None
+
+
+@pytest.mark.parametrize("unavailable_property", ["current_url", "title"])
+def test_step_preserves_original_failure_when_browser_diagnostics_fail(dtc_driver, unavailable_property):
+    class ClosedBrowser:
+        def __getattr__(self, name):
+            if name == unavailable_property:
+                raise sl_exc.NoSuchWindowException("window closed")
+            raise AttributeError(name)
+
+    dtc_driver.driver = ClosedBrowser()
+    original = RuntimeError("original upload failure")
+
+    def upload():
+        raise original
+
+    with pytest.raises(Exception, match="step 'upload' failed: original upload failure") as error:
+        dtc_driver._run_dtc_step("upload", upload)
+    assert error.value.__cause__ is original
+
+
+def test_windows_version_detection_reads_selected_executable(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout="123.0.4567.89" if command[0] == "powershell.exe" else "120.0.0.0")
+
+    monkeypatch.setattr("src.webdrivers.sys.platform", "win32")
+    monkeypatch.setattr("src.webdrivers.subprocess.run", run)
+    assert _detect_chrome_version(r"C:\Bradley's Chromium\chrome.exe") == 123
+    assert "-LiteralPath 'C:\\Bradley''s Chromium\\chrome.exe'" in calls[0][-1]
+
+
+def test_windows_selected_binary_failure_does_not_use_another_installed_browser(monkeypatch):
+    def run(*_args, **_kwargs):
+        raise OSError("selected executable not found")
+
+    monkeypatch.setattr("src.webdrivers.sys.platform", "win32")
+    monkeypatch.setattr("src.webdrivers.subprocess.run", run)
+    assert _detect_chrome_version(r"C:\missing\chrome.exe") is None
