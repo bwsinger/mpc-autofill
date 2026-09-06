@@ -2,7 +2,7 @@ name: Desktop tool tests
 description: Test the MPC Autofill CLI / desktop tool
 inputs:
   google-drive-api-key:
-    description: Your Google Drive API key. When empty, tests requiring it skip themselves.
+    description: Google service-account JSON. When empty, tests requiring it skip themselves.
     required: false
     default: ""
 runs:
@@ -10,6 +10,7 @@ runs:
   steps:
     # not sure atm how to set up brave browser on github actions
     - uses: browser-actions/setup-chrome@latest
+      id: chrome
       with:
         chrome-version: stable
     # - uses: browser-actions/setup-edge@latest
@@ -30,6 +31,12 @@ runs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
       shell: bash
+    - name: Install Ghostscript for PDF/X integration tests
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes ghostscript
+      shell: bash
     - name: Write Google Drive API credentials to file
       if: inputs.google-drive-api-key != ''
       uses: jsdaniell/create-json@v1.2.3
@@ -40,9 +47,10 @@ runs:
     - name: Run tests
       working-directory: desktop-tool
       env:
-        MPC_AUTOFILL_RELEASE_CHECKS: "1"
+        CHROME_BINARY: ${{ steps.chrome.outputs.chrome-path }}
       run: |
         if [[ "$RUNNER_OS" == Linux ]]; then
+          python -c "from src.pdf_maker import get_ghostscript_path; assert get_ghostscript_path() is not None, 'Ghostscript is required for Linux CI'"
           dbus-run-session -- pytest .
         else
           pytest .

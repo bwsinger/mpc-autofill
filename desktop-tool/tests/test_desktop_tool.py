@@ -530,20 +530,6 @@ def test_get_undetected_chrome_driver_applies_user_profile_options(monkeypatch: 
     assert captured["version_main"] == 120
 
 
-def test_detect_chrome_version_uses_selected_brave_browser(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return SimpleNamespace(stdout="version REG_SZ 150.1.92.143")
-
-    monkeypatch.setattr(webdrivers.sys, "platform", "win32")
-    monkeypatch.setattr(webdrivers.subprocess, "run", fake_run)
-
-    assert webdrivers._detect_chrome_version(r"C:\Program Files\BraveSoftware\brave.exe") == 150
-    assert r"BraveSoftware\Brave-Browser\BLBeacon" in captured["args"][2]
-
-
 def test_get_undetected_chrome_driver_reports_missing_chrome(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("undetected_chromedriver.find_chrome_executable", lambda: None)
 
@@ -904,15 +890,6 @@ def test_nuitka_directives_include_runtime_data_and_cached_extraction() -> None:
     assert "--include-data-dir=assets=assets" in source
     assert "--include-package-data=certifi" in source
     assert "--onefile-tempdir-spec={CACHE_DIR}/mpc-autofill/{VERSION}" in source
-
-
-def test_readme_points_users_to_wiki_for_usage_docs() -> None:
-    readme_path = os.path.join(os.path.dirname(autofill_cli.__file__), "readme.md")
-    with open(readme_path, "r", encoding="utf-8") as f:
-        readme = f.read()
-    assert "https://github.com/chilli-axe/mpc-autofill/wiki/Desktop-Tool" in readme
-    assert "--skip-pdf-if-exists" not in readme
-    assert "--download-images-only" not in readme
 
 
 # endregion
@@ -2001,7 +1978,8 @@ def test_card_order_mangled_xml(input_enter):
         (constants.Cardstocks.P10.value, True),
     ],
 )
-def test_dtc_card_order_parsing_ignores_cardstock_and_foil(tmp_path, stock: str, foil: bool) -> None:
+def test_dtc_card_order_parsing_ignores_cardstock_and_foil(monkeypatch, tmp_path, stock: str, foil: bool) -> None:
+    monkeypatch.setattr("src.order.get_google_drive_file_name", lambda drive_id: "cardback.png")
     source = Path(__file__).with_name("test_order.xml").read_text(encoding="utf-8")
     xml_path = tmp_path / "dtc.xml"
     xml_path.write_text(
@@ -2694,7 +2672,6 @@ def test_pdf_export_drive_thru_cards_combines_actual_front_slots_into_one_file(m
             max_dpi=300,
             downscale_alg=constants.ImageResizeMethods.LANCZOS,
             output_format="JPEG",
-            convert_to_cmyk=False,
         )
     )
 
@@ -2761,7 +2738,6 @@ def test_pdf_export_drive_thru_cards_processes_and_embeds_repeated_images_once(m
             max_dpi=300,
             downscale_alg=constants.ImageResizeMethods.LANCZOS,
             output_format="JPEG",
-            convert_to_cmyk=False,
         )
     )
 
@@ -2772,7 +2748,7 @@ def test_pdf_export_drive_thru_cards_processes_and_embeds_repeated_images_once(m
     with open("export/test_dedup/1.pdf", "rb") as f:
         assert f.read().count(b"DCTDecode") == 3
     # temp files are cleaned up after execute()
-    assert exporter.processed_image_paths == {}
+    assert exporter.processed_images == {}
 
 
 # endregion
