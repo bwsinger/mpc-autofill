@@ -939,6 +939,17 @@ class AutofillDriver:
             self.driver.execute_script("arguments[0].click();", buy_now_link)  # type: ignore[no-untyped-call]
             logger.debug("Clicked 'buy now' link.")
 
+        with self.no_implicit_wait():
+            login_buttons = self.driver.find_elements(
+                By.CSS_SELECTOR, self.target_site.value.selectors.login_button_selector
+            )
+            login_visible = any(button.is_displayed() for button in login_buttons)  # type: ignore[no-untyped-call]
+        if login_visible and not self.is_dtc_user_authenticated():
+            raise Exception(
+                "DriveThruCards requires sign-in before the cart handoff. "
+                "Sign in and review the completed product in the browser before adding it to your cart manually."
+            )
+
     def _log_dtc_page_state(self, context: str) -> None:
         try:
             current_url = str(getattr(self.driver, "current_url", "unavailable"))

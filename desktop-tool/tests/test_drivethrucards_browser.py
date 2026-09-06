@@ -75,14 +75,26 @@ def upload_page(tmp_path):
         <button id="submit_id">Complete Setup</button>
         <script>
         document.getElementById('submit_id').onclick = () => {
-            const target = new URLSearchParams(location.search).get('mode') === 'redirected' ? 'login' : 'cart';
-            document.body.innerHTML = '<a href="' + target + '.html?action=buy_now&products_id=123">Buy now</a>';
+            const mode = new URLSearchParams(location.search).get('mode');
+            const target = mode === 'redirected' ? 'login' : 'cart';
+            document.body.innerHTML = '<a href="' + target + '.html?action=buy_now&products_id=123&mode=' + mode + '">Buy now</a>';
         };
         </script>""",
         encoding="utf-8",
     )
-    (tmp_path / "cart.html").write_text("<!doctype html><title>Cart fixture</title><p>Order 123</p>", encoding="utf-8")
-    (tmp_path / "login.html").write_text("<!doctype html><title>Login fixture</title><p>Sign in</p>", encoding="utf-8")
+    (tmp_path / "cart.html").write_text(
+        """<!doctype html><title>Cart fixture</title><p>Order 123</p>
+        <script>
+        if (new URLSearchParams(location.search).get('mode') === 'authenticated_with_login') {
+            document.body.insertAdjacentHTML('beforeend',
+                '<button data-cy="login">Log in</button><button data-cy="accountMenu">Account</button>');
+        }
+        </script>""",
+        encoding="utf-8",
+    )
+    (tmp_path / "login.html").write_text(
+        '<!doctype html><title>Login fixture</title><button data-cy="login">Log in</button>', encoding="utf-8"
+    )
     pdf = tmp_path / "order.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
 
@@ -101,7 +113,7 @@ def upload_page(tmp_path):
         thread.join()
 
 
-@pytest.mark.parametrize("mode", ["accepted", "rejected", "server_rejected"])
+@pytest.mark.parametrize("mode", ["accepted", "rejected", "server_rejected", "redirected", "authenticated_with_login"])
 def test_pdf_upload_respects_native_file_events_and_validation(browser, upload_page, monkeypatch, mode):
     monkeypatch.setattr(AutofillDriver, "__attrs_post_init__", lambda self: None)
     driver = AutofillDriver(target_site=TargetSites.DriveThruCards, driver=browser)
@@ -120,6 +132,10 @@ def test_pdf_upload_respects_native_file_events_and_validation(browser, upload_p
         with pytest.raises(Exception, match="upload was not confirmed"):
             driver.select_card_type_and_upload_pdf(str(pdf))
         assert browser.find_element("id", "continue_button").get_attribute("onclick") == "return false"
+    elif mode == "redirected":
+        with pytest.raises(Exception, match="requires sign-in before the cart handoff"):
+            driver.select_card_type_and_upload_pdf(str(pdf))
+        assert browser.title == "Login fixture"
     else:
         driver.select_card_type_and_upload_pdf(str(pdf))
         assert browser.title == "Cart fixture"
