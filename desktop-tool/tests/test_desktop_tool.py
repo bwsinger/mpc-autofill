@@ -2575,6 +2575,15 @@ def test_pdf_export_drive_thru_cards_processes_and_embeds_repeated_images_once(m
 # region test driver.py
 
 
+@pytest.fixture
+def autofill_driver(browser, site):
+    driver = AutofillDriver(browser=browser, target_site=site, headless=True)
+    try:
+        yield driver
+    finally:
+        driver.driver.quit()
+
+
 @pytest.mark.flaky(retries=3, delay=1)
 @pytest.mark.parametrize("browser", [constants.Browsers.chrome])  # , constants.Browsers.edge
 @pytest.mark.parametrize(
@@ -2589,8 +2598,7 @@ def test_pdf_export_drive_thru_cards_processes_and_embeds_repeated_images_once(m
     ],
 )
 @requires_google_drive_credentials
-def test_card_order_complete_run_single_cardback(browser, site, input_enter, card_order_valid):
-    autofill_driver = AutofillDriver(browser=browser, target_site=site, headless=True)
+def test_card_order_complete_run_single_cardback(autofill_driver, input_enter, card_order_valid):
     autofill_driver.execute_order(
         order=card_order_valid,
         fulfilment_method=OrderFulfilmentMethod.new_project,
@@ -2621,8 +2629,7 @@ def test_card_order_complete_run_single_cardback(browser, site, input_enter, car
     ],
 )
 @requires_google_drive_credentials
-def test_card_order_complete_run_multiple_cardbacks(browser, site, input_enter, card_order_multiple_cardbacks):
-    autofill_driver = AutofillDriver(browser=browser, target_site=site, headless=True)
+def test_card_order_complete_run_multiple_cardbacks(autofill_driver, input_enter, card_order_multiple_cardbacks):
     autofill_driver.execute_order(
         order=card_order_multiple_cardbacks,
         fulfilment_method=OrderFulfilmentMethod.new_project,
