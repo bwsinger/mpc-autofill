@@ -1,6 +1,8 @@
 """Smoke test a packaged executable, or source CLI by default, without accounts or downloads."""
 
 import argparse
+import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -47,16 +49,38 @@ def main():
             "--allowsleep",
             "--dtc-icc-profile",
             str(args.icc_profile.resolve()),
+            "--skip-pdf-if-exists",
         ]
 
-        result = subprocess.run(command, input="", capture_output=True, text=True, timeout=120)
-        output = result.stdout + result.stderr
-        assert result.returncode == 0, output
-        assert {path.name for path in (work / "export/order").glob("*.pdf")} == {"1.pdf", "1_pdfx.pdf"}, output
+        def run():
+            result = subprocess.run(command, input="", capture_output=True, text=True, timeout=120)
+            output = result.stdout + result.stderr
+            assert result.returncode == 0, output
+            return output
+
+        def snapshot():
+            return {
+                path.name: (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in (work / "export/order").glob("*.pdf")
+            }
+
+        output = run()
+        original = snapshot()
+        assert set(original) == {"1.pdf", "1_pdfx.pdf"}, output
         pdf = (work / "export/order/1_pdfx.pdf").read_bytes()
         assert b"(PDF/X-1a:2001)" in pdf and b"/OutputIntents" in pdf
         assert len(re.findall(rb"/Type\s*/Page\b", pdf)) == 4
-    print("PDF export smoke passed: sparse-slot PDF/X conversion.")
+        assert "Reusing PDF export" in run()
+        assert snapshot() == original, "Identical inputs should preserve PDF bytes and modification times"
+        previous = front.stat()
+        Image.new("RGB", (82, 111), "yellow").save(front)
+        os.utime(front, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        assert front.stat().st_mtime_ns == previous.st_mtime_ns
+        assert "Reusing PDF export" not in run()
+        rebuilt = snapshot()
+        assert rebuilt.keys() == original.keys()
+        assert all(rebuilt[name][1] != original[name][1] for name in original), "Changed image bytes must rebuild PDFs"
+    print("PDF export smoke passed: PDF/X conversion, identical reuse, changed-image rebuild.")
 
 
 if __name__ == "__main__":
