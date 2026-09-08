@@ -782,6 +782,7 @@ def test_convert_pdf_to_pdfx_writes_output_atomically(monkeypatch: pytest.Monkey
     source_path.write_bytes(b"source")
 
     def fake_run(cmd, capture_output=True, text=True):
+        assert "-dPDFX" in cmd  # Ghostscript 10.02.1 rejects the numeric -dPDFX=1 option.
         output_arg = next(arg for arg in cmd if arg.startswith("-sOutputFile="))
         Path(output_arg.split("=", 1)[1]).write_bytes(b"%PDF-1.3 (PDF/X-1a:2001) /OutputIntents")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
