@@ -1,6 +1,11 @@
 name: Ghostscript native upgrade acceptance
 on:
   workflow_dispatch:
+    inputs:
+      windows-only:
+        description: Retry Windows installer acceptance without repeating completed Mac/Linux runs
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -11,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-22.04]
+        os: ${{ fromJSON(inputs.windows-only && '["windows-latest"]' || '["windows-latest", "macos-latest", "macos-15-intel", "ubuntu-22.04"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-desktop-tool
