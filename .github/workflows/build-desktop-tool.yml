@@ -76,4 +76,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: platform-validation-${{ matrix.target }}
-          path: platform-results/
+          path: |
+            platform-results/*.log
+            platform-results/results.json
+            platform-results/browser-url.txt
