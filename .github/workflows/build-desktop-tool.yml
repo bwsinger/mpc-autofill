@@ -7,6 +7,10 @@ on:
         description: Completed build-desktop-tool run containing PR11 artifacts
         required: true
         type: string
+      replacement-run-id:
+        description: Second independently compiled build of the same PR and test version
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -50,10 +54,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download '${{ inputs.build-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir binary
+        run: |
+          gh run download '${{ inputs.build-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir binary
+          gh run download '${{ inputs.replacement-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir replacement
       - name: Exercise native packaged update behavior
         shell: bash
-        run: python platform-testing/check_bundle.py 'binary/${{ matrix.filename }}'
+        run: python platform-testing/check_bundle.py 'binary/${{ matrix.filename }}' --replacement 'replacement/${{ matrix.filename }}'
       - name: Save transcripts and machine-readable results
         if: always()
         uses: actions/upload-artifact@v7

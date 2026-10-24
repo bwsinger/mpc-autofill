@@ -73,6 +73,7 @@ def main():
     parser.add_argument("executable", type=Path)
     parser.add_argument("--output", type=Path, default=Path("platform-results"))
     parser.add_argument("--version", default="1.2.3")
+    parser.add_argument("--replacement", type=Path)
     args = parser.parse_args()
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -108,6 +109,18 @@ def main():
     results = []
     version_text = f"MPC Autofill {args.version} (bwsinger/mpc-autofill)"
     terminals = []
+    if os.name == "nt":
+        import ctypes
+
+        native_cache = ctypes.create_unicode_buffer(32768)
+        assert ctypes.windll.shell32.SHGetFolderPathW(None, 28, None, 0, native_cache) == 0
+        cache_root = Path(native_cache.value) / "mpc-autofill"
+    else:
+        cache_root = Path(env["XDG_CACHE_HOME"]) / "mpc-autofill"
+    cache_evidence = {}
+
+    def cache_names():
+        return sorted(path.name for path in cache_root.iterdir() if path.is_dir()) if cache_root.exists() else []
 
     def run(name, arguments, extra_env=None):
         completed = subprocess.run([str(binary), *arguments], cwd=binary_dir,
@@ -149,6 +162,7 @@ def main():
         code, output = run("tls", ["--check-updates", "--check-tls"])
         assert code == 0 and "TLS check succeeded" in output, output
         assert not pref.exists()
+        cache_evidence["first_build"] = cache_names()
 
     def headless():
         code, output = run("headless-default", order_args)
@@ -176,6 +190,9 @@ def main():
         code, output = run("headless-remembered-yes", order_args)
         assert "Download:" not in output and offer not in output, output
         preference(True)
+        code, output = run("headless-disable", ["--no-check-updates", *order_args])
+        assert code != 0 and continuation in output and "Download:" not in output, output
+        preference(False)
 
     def declined_notice():
         term = interactive(["--check-updates", *order_args])
@@ -229,6 +246,14 @@ def main():
         assert consent not in second.output and offer not in second.output
         preference(False)
 
+    def enable_only_onboarding():
+        term = interactive(["--check-updates"])
+        term.until(offer)
+        term.send("n\n")
+        term.until("Which web browser should the tool run on?")
+        assert consent not in term.output
+        preference(True)
+
     def offline():
         proxy = {"HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
         term = interactive(["--check-updates", *order_args], proxy)
@@ -257,6 +282,29 @@ def main():
         term.finish()
         preference(True)
 
+    def independently_rebuilt_replacement():
+        replacement = args.replacement.resolve()
+        assert hashlib.sha256(replacement.read_bytes()).hexdigest() != hashlib.sha256(original.read_bytes()).hexdigest()
+        preference(True)
+        before = cache_names()
+        shutil.copy2(replacement, binary)
+        binary.chmod(binary.stat().st_mode | 0o111)
+        code, output = run("rebuilt-version", ["--version"])
+        assert code == 0 and output.strip() == version_text, output
+        after = cache_names()
+        assert before and after and set(before).isdisjoint(after), (before, after)
+        cache_evidence["replacement_build"] = after
+        term = interactive(order_args)
+        term.until(offer)
+        assert consent not in term.output
+        term.send("n\n")
+        term.until(continuation)
+        term.finish()
+        preference(True)
+        code, output = run("rebuilt-disable", ["--no-check-updates", *order_args])
+        assert code != 0 and continuation in output and "Download:" not in output, output
+        preference(False)
+
     try:
         for name, test in [("diagnostic-bypass-and-embedded-identity", diagnostic_checks),
                            ("headless-default-does-not-write-settings", headless),
@@ -266,16 +314,21 @@ def main():
                            ("accepted-update-hands-off-url-and-stops", accept_and_stop),
                            ("moved-and-replaced-executable-keeps-consent", move_and_replace),
                            ("disable-flag-and-ordinary-onboarding", disable_and_onboarding),
+                           ("enable-only-flag-retains-onboarding", enable_only_onboarding),
                            ("offline-check-continues", offline),
                            ("malformed-consent-prompts-again", malformed),
                            ("first-run-yes-checks-and-persists", first_yes)]:
             record(name, test)
+        if args.replacement:
+            record("independently-rebuilt-replacement-uses-new-cache-and-keeps-consent", independently_rebuilt_replacement)
     finally:
         summary = {"platform": platform.platform(), "architecture": platform.machine(),
                    "python": sys.version, "artifact_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
-                   "version": args.version, "preference_path": str(pref), "results": results,
+                   "replacement_sha256": hashlib.sha256(args.replacement.read_bytes()).hexdigest() if args.replacement else None,
+                   "version": args.version, "preference_path": str(pref), "cache_root": str(cache_root),
+                   "cache_directories": cache_evidence, "results": results,
                    "limitations": ["Browser handoff captured by a test command; default GUI browser was not inspected.",
-                                   "Replacement uses the same compiled artifact, not a separately compiled upgrade.",
+                                   "Both independently compiled builds use test version 1.2.3; numeric upgrade ordering is covered by unit tests.",
                                    "Order-directory validation deliberately stops continuation before order processing."]}
         (root / "results.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
