@@ -72,9 +72,9 @@ def install(url, digest, evidence, old=False):
                 ]
             )
         )
-        # Artifex releases may be unsigned; pinned publisher hashes remain mandatory.
-        assert signature["Status"] in {"Valid", "NotSigned"}, signature
-        assert "ghostscript" in signature["Product"].lower(), signature
+        assert signature["Status"] == "Valid" and "Artifex Software" in signature["Signer"], signature
+        if signature["Product"]:
+            assert "ghostscript" in signature["Product"].lower(), signature
         run([str(path), "/S"], timeout=300)
     else:
         signature = run(["/usr/sbin/pkgutil", "--check-signature", str(path)])
