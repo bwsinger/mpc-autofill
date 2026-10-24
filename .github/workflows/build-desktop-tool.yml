@@ -71,7 +71,13 @@ jobs:
           gh run download '${{ inputs.replacement-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir replacement
       - name: Exercise native packaged update behavior
         shell: bash
-        run: python platform-testing/check_bundle.py 'binary/${{ matrix.filename }}' --replacement 'replacement/${{ matrix.filename }}'
+        run: |
+          python platform-testing/probe_release_api.py
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            dbus-run-session -- python platform-testing/check_bundle.py 'binary/${{ matrix.filename }}' --replacement 'replacement/${{ matrix.filename }}'
+          else
+            python platform-testing/check_bundle.py 'binary/${{ matrix.filename }}' --replacement 'replacement/${{ matrix.filename }}'
+          fi
       - name: Save transcripts and machine-readable results
         if: always()
         uses: actions/upload-artifact@v7
@@ -81,3 +87,4 @@ jobs:
             platform-results/*.log
             platform-results/results.json
             platform-results/browser-url.txt
+            public-release-api.log
