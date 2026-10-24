@@ -17,7 +17,18 @@ permissions:
   actions: read
 
 jobs:
+  wait-for-builds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Wait for both independently compiled artifact sets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run watch '${{ inputs.build-run-id }}' --repo '${{ github.repository }}' --interval 30 --exit-status
+          gh run watch '${{ inputs.replacement-run-id }}' --repo '${{ github.repository }}' --interval 30 --exit-status
   validate:
+    needs: wait-for-builds
     name: Packaged behavior (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
