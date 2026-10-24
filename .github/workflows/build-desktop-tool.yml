@@ -17,21 +17,10 @@ permissions:
   actions: read
 
 jobs:
-  wait-for-builds:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Wait for both independently compiled artifact sets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh run watch '${{ inputs.build-run-id }}' --repo '${{ github.repository }}' --interval 30 --exit-status
-          gh run watch '${{ inputs.replacement-run-id }}' --repo '${{ github.repository }}' --interval 30 --exit-status
   validate:
-    needs: wait-for-builds
     name: Packaged behavior (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +54,19 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ matrix.target }} Unsigned Build
         run: |
+          for build_run in '${{ inputs.build-run-id }}' '${{ inputs.replacement-run-id }}'; do
+            ready=false
+            for attempt in $(seq 1 120); do
+              if gh api 'repos/${{ github.repository }}/actions/runs/'"$build_run"'/artifacts' --jq '.artifacts[].name' | grep -Fxq "$ARTIFACT"; then
+                ready=true
+                break
+              fi
+              sleep 20
+            done
+            test "$ready" = true || exit 1
+          done
           gh run download '${{ inputs.build-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir binary
           gh run download '${{ inputs.replacement-run-id }}' --repo '${{ github.repository }}' --name '${{ matrix.target }} Unsigned Build' --dir replacement
       - name: Exercise native packaged update behavior
