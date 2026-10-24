@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,6 +40,84 @@ def version(path, supported):
     print("GHOSTSCRIPT", str(path), value, flush=True)
     assert value and pdf_maker.is_ghostscript_version_supported(value) is supported
     return value
+
+
+def install_windows(path, evidence):
+    import ctypes
+    from ctypes import wintypes
+
+    # Upstream .onInit forces SetSilent normal, overriding /S; drive only this process's installer buttons.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    for name in ["EnumWindows", "EnumChildWindows"]:
+        function = getattr(user32, name)
+        function.argtypes = ([wintypes.HWND] if name == "EnumChildWindows" else []) + [callback_type, wintypes.LPARAM]
+        function.restype = wintypes.BOOL
+    for name in ["GetWindowTextW", "GetClassNameW"]:
+        getattr(user32, name).argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    for name in ["IsWindowVisible", "IsWindowEnabled"]:
+        getattr(user32, name).argtypes = [wintypes.HWND]
+
+    def label(hwnd, function=user32.GetWindowTextW):
+        buffer = ctypes.create_unicode_buffer(2048)
+        function(hwnd, buffer, len(buffer))
+        return buffer.value
+
+    events = []
+    command = [str(path), "/S"]
+    print("COMMAND", json.dumps(command), "CI button automation; UAC NOT exercised", flush=True)
+    with (evidence / f"{path.stem}-installer.log").open("w") as output:
+        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 300
+        previous = None
+        while process.poll() is None and time.monotonic() < deadline:
+            windows = []
+
+            @callback_type
+            def top(hwnd, _):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value == process.pid and user32.IsWindowVisible(hwnd) and user32.IsWindowEnabled(hwnd):
+                    windows.append(hwnd)
+                return True
+
+            user32.EnumWindows(top, 0)
+            controls = []
+            for window in windows:
+
+                @callback_type
+                def child(hwnd, _):
+                    if user32.IsWindowVisible(hwnd) and user32.IsWindowEnabled(hwnd):
+                        controls.append((hwnd, label(hwnd), label(hwnd, user32.GetClassNameW)))
+                    return True
+
+                user32.EnumChildWindows(window, child, 0)
+            state = [(text, cls) for _, text, cls in controls]
+            if state != previous:
+                print("INSTALLER CONTROLS", json.dumps(state), flush=True)
+                previous = state
+            for hwnd, text, cls in controls:
+                if cls == "Button" and text.replace("&", "").strip() in {
+                    "Next >",
+                    "I Agree",
+                    "Install",
+                    "Finish",
+                    "OK",
+                    "No",
+                }:
+                    print("INSTALLER CLICK", text, flush=True)
+                    events.append(text)
+                    assert user32.PostMessageW(hwnd, 0x00F5, 0, 0)
+                    break
+            time.sleep(0.5)
+        if process.poll() is None:
+            process.kill()
+            raise TimeoutError("Verified installer did not finish; inspect INSTALLER CONTROLS")
+        print("INSTALLER EXIT", process.returncode, flush=True)
+        assert process.returncode == 0
+    (evidence / f"{path.stem}-buttons.json").write_text(json.dumps(events), encoding="utf-8")
 
 
 def install(url, digest, evidence, old=False):
@@ -75,7 +154,7 @@ def install(url, digest, evidence, old=False):
         assert signature["Status"] == "Valid" and "Artifex Software" in signature["Signer"], signature
         if signature["Product"]:
             assert "ghostscript" in signature["Product"].lower(), signature
-        run([str(path), "/S"], timeout=300)
+        install_windows(path, evidence)
     else:
         signature = run(["/usr/sbin/pkgutil", "--check-signature", str(path)])
         assert "Developer ID Installer: Richard Koch" in signature, signature
