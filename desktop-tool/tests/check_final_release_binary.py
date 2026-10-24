@@ -55,7 +55,15 @@ def main():
     env = os.environ.copy()
     for name in ["SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"]:
         env.pop(name, None)
-    env.update(NO_COLOR="1", PYTHONUTF8="1")
+    env.update(NO_COLOR="1", PYTHONUTF8="1", XDG_CACHE_HOME=str(evidence / "cache"))
+    if os.name == "nt":
+        import ctypes
+
+        native_cache = ctypes.create_unicode_buffer(32768)
+        assert ctypes.windll.shell32.SHGetFolderPathW(None, 28, None, 0, native_cache) == 0
+        cache_root = Path(native_cache.value) / "mpc-autofill"
+    else:
+        cache_root = evidence / "cache/mpc-autofill"
 
     def run(name, command, timeout=180):
         print("COMMAND", json.dumps([str(part) for part in command]), flush=True)
@@ -69,6 +77,11 @@ def main():
     try:
         assert run("version", [str(executable), "--version"]).strip() == "MPC Autofill 1.2.6 (bwsinger/mpc-autofill)"
         result["checks"].append("exact release version/repository")
+        expected_cache = f"bwsinger-mpc-autofill-40118782173-1-{args.target}-1.2.6"
+        cache_names = sorted(path.name for path in cache_root.iterdir() if path.is_dir())
+        assert expected_cache in cache_names, cache_names
+        result["cache_metadata"] = {"root": str(cache_root), "directories": cache_names, "expected": expected_cache}
+        result["checks"].append("original final build cache identity")
         help_output = run("help", [str(executable), "--help"])
         assert "MakePlayingCards" in help_output and "DriveThruCards" in help_output
         result["checks"].append("help")
