@@ -20,7 +20,7 @@ jobs:
       - name: Isolated failure boundary tests
         shell: bash
         working-directory: desktop-tool
-        run: uv run --locked --group dev python -m pytest tests/test_ghostscript_upgrade_failures.py tests/test_modernization.py tests/test_desktop_tool.py -k 'ghostscript or installer or unsupported or old_path' -v
+        run: uv run --locked --group dev python -m pytest tests/test_ghostscript_upgrade_failures.py tests/test_modernization.py tests/test_desktop_tool.py tests/test_pdf_cache.py -k 'ghostscript or installer or unsupported or old_path' -v
       - name: Install real old Linux distro package
         if: runner.os == 'Linux'
         shell: bash
