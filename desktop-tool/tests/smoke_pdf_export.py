@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +12,9 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.pdf_maker import get_ghostscript_path
 
 
 def main():
@@ -80,7 +82,7 @@ def main():
             header, data = match.groups()
             streams.append(zlib.decompress(data) if b"/FlateDecode" in header else data)
         assert args.icc_profile.read_bytes() in streams, "Requested ICC profile must be embedded unchanged"
-        gs = next((path for name in ["gs", "gswin64c", "gswin32c"] if (path := shutil.which(name))), None)
+        gs = get_ghostscript_path()
         assert gs, "A supported Ghostscript is required for raster validation"
         subprocess.run(
             [
