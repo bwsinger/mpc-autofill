@@ -17,7 +17,8 @@ def main():
     parser.add_argument("executable", type=Path)
     parser.add_argument("target", choices=["windows", "macos-arm", "macos-intel", "linux"])
     args = parser.parse_args()
-    assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("Installer validation requires a disposable GitHub-hosted runner")
     evidence = Path("final-results").resolve()
     evidence.mkdir(exist_ok=True)
     executable = args.executable.resolve()

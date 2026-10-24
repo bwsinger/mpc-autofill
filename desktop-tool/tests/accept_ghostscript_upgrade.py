@@ -43,7 +43,8 @@ def version(path, supported):
 
 
 def install_windows(path, evidence):
-    assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("Installer validation requires a disposable GitHub-hosted runner")
     import ctypes
     from ctypes import wintypes
 
@@ -122,7 +123,8 @@ def install_windows(path, evidence):
 
 
 def install(url, digest, evidence, old=False):
-    assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("Installer validation requires a disposable GitHub-hosted runner")
     if sys.platform == "win32" and old:
         # Production download helper is SHA-256; the old publisher supplied SHA-512.
         from urllib.request import urlretrieve
@@ -169,7 +171,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=["native", "linux-old", "linux-upgraded"])
     args = parser.parse_args()
-    assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("Installer validation requires a disposable GitHub-hosted runner")
     evidence = Path(os.environ["RUNNER_TEMP"]) / "gs-upgrade-evidence"
     evidence.mkdir(exist_ok=True)
     print("HOST", platform.platform(), platform.machine(), sys.version, flush=True)
