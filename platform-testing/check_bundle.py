@@ -225,7 +225,9 @@ def main():
         code, output = run("moved-version", ["--version"])
         assert code == 0 and output.strip() == version_text, output
         # Replace the file from the artifact, retaining only the external preference.
-        shutil.copy2(original, binary)
+        replacement_file = binary.with_name(binary.name + ".replacement")
+        shutil.copy2(original, replacement_file)
+        os.replace(replacement_file, binary)
         binary.chmod(binary.stat().st_mode | 0o111)
         term = interactive(order_args)
         term.until(offer)
@@ -287,7 +289,11 @@ def main():
         assert hashlib.sha256(replacement.read_bytes()).hexdigest() != hashlib.sha256(original.read_bytes()).hexdigest()
         preference(True)
         before = cache_names()
-        shutil.copy2(replacement, binary)
+        # Replace the outer executable's inode, as a normal file-manager upgrade does.
+        # The extracted inner executable must still get a different cache directory.
+        replacement_file = binary.with_name(binary.name + ".replacement")
+        shutil.copy2(replacement, replacement_file)
+        os.replace(replacement_file, binary)
         binary.chmod(binary.stat().st_mode | 0o111)
         code, output = run("rebuilt-version", ["--version"])
         assert code == 0 and output.strip() == version_text, output
