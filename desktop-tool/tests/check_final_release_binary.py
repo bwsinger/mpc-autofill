@@ -55,7 +55,7 @@ def main():
     env = os.environ.copy()
     for name in ["SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"]:
         env.pop(name, None)
-    env.update(NO_COLOR="1", PYTHONUTF8="1", XDG_CACHE_HOME=str(evidence / "cache"))
+    env.update(NO_COLOR="1", PYTHONUTF8="1", XDG_CACHE_HOME=str(Path(os.environ["RUNNER_TEMP"]) / "final-binary-cache"))
     if os.name == "nt":
         import ctypes
 
@@ -63,7 +63,7 @@ def main():
         assert ctypes.windll.shell32.SHGetFolderPathW(None, 28, None, 0, native_cache) == 0
         cache_root = Path(native_cache.value) / "mpc-autofill"
     else:
-        cache_root = evidence / "cache/mpc-autofill"
+        cache_root = Path(env["XDG_CACHE_HOME"]) / "mpc-autofill"
 
     def run(name, command, timeout=180):
         print("COMMAND", json.dumps([str(part) for part in command]), flush=True)
