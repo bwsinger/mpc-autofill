@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -25,7 +26,7 @@ class Terminal:
         else:
             import pexpect
 
-            self.child = pexpect.spawn(command[0], command[1:], env=env, cwd=str(cwd), encoding="utf-8", dimensions=(40, 140))
+            self.child = pexpect.spawn(shlex.join(command), env=env, cwd=str(cwd), encoding="utf-8", dimensions=(40, 140))
 
     def read(self):
         try:
