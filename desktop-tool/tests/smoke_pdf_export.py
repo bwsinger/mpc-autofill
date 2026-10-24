@@ -60,7 +60,9 @@ def main():
         def run():
             result = subprocess.run(command, input="", capture_output=True, text=True, timeout=120)
             output = result.stdout + result.stderr
+            print("EXECUTABLE COMMAND", command, "EXIT", result.returncode, output, flush=True)
             assert result.returncode == 0, output
+            assert "System sleep is being prevented" in output or "Sleep prevention is unavailable" in output, output
             return output
 
         def snapshot():
