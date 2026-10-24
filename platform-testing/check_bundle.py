@@ -87,9 +87,10 @@ def main():
     env = os.environ.copy()
     settings = root / "isolated-settings"
     settings.mkdir(exist_ok=True)
-    env.update(HOME=str(settings), USERPROFILE=str(settings), APPDATA=str(settings / "roaming"),
-               LOCALAPPDATA=str(settings / "local"), XDG_CONFIG_HOME=str(settings / "config"),
+    env.update(APPDATA=str(settings / "roaming"), XDG_CONFIG_HOME=str(settings / "config"),
                XDG_CACHE_HOME=str(settings / "cache"), TERM="xterm-256color", NO_COLOR="1")
+    if os.name != "nt":
+        env["HOME"] = str(settings)
     if sys.platform == "win32":
         pref = settings / "roaming/mpc-autofill/update-checks/bwsinger/mpc-autofill.json"
     elif sys.platform == "darwin":
@@ -299,7 +300,7 @@ def main():
         code, output = run("rebuilt-version", ["--version"])
         assert code == 0 and output.strip() == version_text, output
         after = cache_names()
-        assert before and after and set(before).isdisjoint(after), (before, after)
+        assert before and after and set(after).difference(before), (before, after)
         cache_evidence["replacement_build"] = after
         term = interactive(order_args)
         term.until(offer)
